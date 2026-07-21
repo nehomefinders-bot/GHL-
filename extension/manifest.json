@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Realtor.com Agent Scraper",
+  "version": "1.0",
+  "description": "Scrape realtor.com real-estate agent names and contact info for a ZIP code into a CSV file.",
+  "permissions": ["activeTab", "scripting", "downloads"],
+  "host_permissions": ["https://www.realtor.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Realtor.com Agent Scraper"
+  }
+}

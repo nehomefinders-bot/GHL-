@@ -1,7 +1,20 @@
 # Realtor.com Agent Scraper
 
-A small Windows desktop app that collects real estate agent contact info from
-[realtor.com/realestateagents](https://www.realtor.com/realestateagents).
+Collects real estate agent names and contact info from
+[realtor.com/realestateagents](https://www.realtor.com/realestateagents) for a
+ZIP code, into a CSV.
+
+## ⭐ Recommended: the Chrome extension
+
+realtor.com blocks automated browsers (Selenium / the standalone exe), so the
+reliable tool is the **Chrome extension**, which runs inside your own Chrome and
+isn't blocked. See **[EXTENSION_INSTALL.md](EXTENSION_INSTALL.md)** and download
+**`RealtorAgentScraper-Extension.zip`**.
+
+The Windows desktop app below still exists, but realtor.com's bot protection
+often blocks it — prefer the extension.
+
+---
 
 ## What it does
 
