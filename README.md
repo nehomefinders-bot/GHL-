@@ -33,19 +33,30 @@ artifact — the `.exe` is inside the zip.
   the matching driver is downloaded automatically the first time).
 - Internet connection.
 
-## Usage
+## Usage (assisted mode)
+
+realtor.com is protected by an aggressive bot-defense system (PerimeterX /
+HUMAN) that blocks fully-automated visits. This tool works *with* you: you clear
+the one-time human check, then it does all the tedious scraping.
 
 1. Run `RealtorAgentScraper.exe`.
 2. Type a 5-digit zip code and click **Start scraping**.
-3. A Chrome window opens and does the work — **leave it open**.
-4. If realtor.com shows a "press & hold" / captcha check, complete it in the
-   Chrome window; the scraper waits and then continues automatically.
-5. When it says *Done*, open `realtor_agents_<zip>.csv` in Excel.
+3. Your **real Chrome** opens on realtor.com — **leave it open**.
+4. In that Chrome window:
+   - If a block page or **"press & hold"** check appears, complete it (a human
+     can; a bot can't — that's the whole point).
+   - Search your **ZIP** and choose **Both**, so the list of agents appears.
+5. The moment the agent list is on screen, the tool **detects it and takes
+   over** — walking every results page and every agent profile automatically.
+6. When it says *Done*, open `realtor_agents_<zip>.csv` in Excel.
+
+The tool uses a dedicated, saved Chrome profile, so once you've cleared the
+check, later runs usually skip straight through without asking again.
 
 ## Notes
 
 - The browser is intentionally visible (not headless) — realtor.com blocks
-  headless browsers.
-- The scraper pauses randomly between pages to behave politely. A zip code
-  with hundreds of agents can take a while.
+  headless and automated browsers.
+- A zip code with hundreds of agents can take a while; the CSV is written after
+  every agent so you never lose progress.
 - Use responsibly and in accordance with realtor.com's terms of service.

@@ -40,7 +40,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-BUILD_VERSION = "v4 (real-chrome)"
+BUILD_VERSION = "v5 (assisted)"
 
 # Persistent Chrome profile so cookies / bot-check tokens survive between runs.
 # This is a dedicated profile (not your everyday one) that Chrome can debug into.
@@ -107,7 +107,6 @@ class RealtorScraper:
                 "--start-maximized",
                 "--no-first-run",
                 "--no-default-browser-check",
-                "--disable-blink-features=AutomationControlled",
                 BASE_URL,
             ],
             stdout=subprocess.DEVNULL,
@@ -182,53 +181,51 @@ class RealtorScraper:
 
     # -------------------------------------------------------------- search
 
-    def run_search(self):
-        """Open the find-an-agent page, pick 'Both', and search the zip code."""
-        self.driver.get(BASE_URL)
-        self.wait_out_bot_check()
-        human_pause()
+    def page_is_blocked(self):
+        src = self.driver.page_source.lower()
+        return any(m in src for m in self.HARD_BLOCK_MARKERS + self.CHALLENGE_MARKERS)
 
+    def reach_results(self):
+        """Get to the agent results list for the zip - with the user's help.
+
+        We first try to open the results URL automatically. realtor.com's bot
+        firewall usually blocks a cold, automated hit, so if that doesn't land on
+        a list of agents we hand control to the user: they solve any check and do
+        the search in the Chrome window, and we detect the results page and take
+        over. A human clears the bot check that automation cannot.
+        """
+        results_url = f"{BASE_URL}/{self.zip_code}/intent-buy-sell"
+
+        # Attempt 1: navigate directly (works once the profile is warmed up).
         try:
-            both = self.wait_for(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//*[self::button or self::a or self::div or self::span]"
-                               "[normalize-space(text())='Both']")
-                ),
-                timeout=15,
-            )
-            self.driver.execute_script("arguments[0].click();", both)
-            self.log("Selected 'Both' (buy & sell).")
-            human_pause(0.5, 1.5)
-
-            box = self.wait_for(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, "input[placeholder*='Zip' i], input[placeholder*='City' i]")
-                ),
-                timeout=15,
-            )
-            box.click()
-            for ch in self.zip_code:
-                box.send_keys(ch)
-                time.sleep(random.uniform(0.05, 0.2))
-            human_pause(0.8, 1.5)
-            box.send_keys(Keys.ENTER)
-            self.log(f"Searched for zip {self.zip_code}.")
+            self.driver.get(results_url)
         except TimeoutException:
-            # Search widget changed or didn't load - fall back to the results URL.
-            self.log("Search form not found, opening results page directly...")
-            self.driver.get(f"{BASE_URL}/{self.zip_code}")
+            pass
+        time.sleep(3)
+        if self.profile_links_on_page():
+            self.log(f"Results loaded automatically for {self.zip_code}.")
+            return
 
-        self.wait_out_bot_check()
-        try:
-            self.wait_for(
-                EC.presence_of_element_located(
-                    (By.XPATH, "//a[contains(@href, '/realestateagents/')]")
-                ),
-                timeout=30,
-            )
-        except TimeoutException:
-            raise RuntimeError("Results page never loaded any agents - check the zip code.")
-        human_pause()
+        # Attempt 2: assisted. Ask the user to drive the browser to the results.
+        self.log("=" * 60)
+        self.log("ACTION NEEDED in the Chrome window:")
+        self.log("  1. If you see a block or 'press & hold', complete it.")
+        self.log(f"  2. Search your ZIP ({self.zip_code}) and choose 'Both'.")
+        self.log("  3. Stop when the list of agents is on screen -")
+        self.log("     I'll detect it and capture everyone automatically.")
+        self.log("=" * 60)
+
+        waited = 0
+        while not self.stop_event.is_set():
+            if self.profile_links_on_page():
+                self.log("Agent list detected - taking over now.")
+                human_pause()
+                return
+            time.sleep(3)
+            waited += 3
+            if waited % 30 == 0:
+                self.log(f"Waiting for the agent list in Chrome... ({waited}s)")
+        raise RuntimeError("Stopped before an agent list was reached.")
 
     # --------------------------------------------------------- result list
 
@@ -349,7 +346,7 @@ class RealtorScraper:
     def run(self, on_row):
         self.start_browser()
         try:
-            self.run_search()
+            self.reach_results()
             links = self.collect_all_profile_links()
             self.log(f"Found {len(links)} agent profiles. Scraping each one...")
             for i, url in enumerate(links, 1):
@@ -404,6 +401,12 @@ class App:
         self.start_btn.pack(side="left", padx=4)
         self.stop_btn = tk.Button(top, text="Stop", command=self.stop, state="disabled", padx=14)
         self.stop_btn.pack(side="left", padx=4)
+
+        hint = ("How it works: click Start -> Chrome opens. If realtor.com shows a "
+                "check, solve it and search your ZIP with 'Both'. Once the agent "
+                "list shows, the tool captures everyone automatically.")
+        tk.Label(root, text=hint, anchor="w", justify="left", wraplength=690,
+                 fg="#555", padx=12, pady=4).pack(fill="x")
 
         self.status_var = tk.StringVar(value="Enter a zip code and click Start.")
         tk.Label(root, textvariable=self.status_var, anchor="w", padx=12).pack(fill="x")
