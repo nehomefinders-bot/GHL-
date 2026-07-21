@@ -196,29 +196,39 @@ function scrapeNpi(maxOrgs) {
       log("Scanning page: " + npiAnchors.length + " NPI links found.");
 
       const orgs = [];
-      const seen = new Set();
-      let orgHits = 0, indivHits = 0;
+      const processed = new Set();
+      let orgHits = 0, indivHits = 0, unknown = 0;
       for (const a of npiAnchors) {
         const href = a.getAttribute("href") || "";
         const m = href.match(/(\d{10})/) || (a.textContent || "").match(/(\d{10})/);
         if (!m) continue;
         const npi = m[1];
-        const row =
-          a.closest("tr, [role='row'], li, .list-group-item, .card, .row") ||
-          (a.parentElement && a.parentElement.parentElement) ||
-          a.parentElement;
-        const rowText = row ? row.textContent || "" : "";
-        const isOrg = /\bOrganization\b/i.test(rowText);
-        const isIndiv = /\bIndividual\b/i.test(rowText);
-        if (seen.has(npi)) continue;
-        if (isOrg) orgHits++;
-        else if (isIndiv) { indivHits++; continue; }
-        else continue; // couldn't classify - skip to be safe
-        seen.add(npi);
-        orgs.push({ npi, url: a.href });
+        if (processed.has(npi)) continue;
+
+        // Climb up until we reach the first ancestor that says which type it is.
+        let isOrg = false, isIndiv = false;
+        let node = a;
+        for (let i = 0; i < 10 && node; i++) {
+          const t = node.textContent || "";
+          const hasOrg = /\bOrganization\b/i.test(t);
+          const hasInd = /\bIndividual\b/i.test(t);
+          if (hasOrg || hasInd) {
+            // Prefer the more specific one if only one is present at this level.
+            if (hasOrg && !hasInd) isOrg = true;
+            else if (hasInd && !hasOrg) isIndiv = true;
+            else { isOrg = hasOrg; } // both present (climbed too far) - default org
+            break;
+          }
+          node = node.parentElement;
+        }
+
+        if (isOrg) { orgHits++; processed.add(npi); orgs.push({ npi, url: a.href }); }
+        else if (isIndiv) { indivHits++; processed.add(npi); }
+        else { unknown++; }
       }
 
-      log("Classified rows - Organizations: " + orgHits + ", Individuals skipped: " + indivHits + ".");
+      log("Classified - Organizations: " + orgHits + ", Individuals skipped: " +
+          indivHits + (unknown ? ", unclassified: " + unknown : "") + ".");
       log("Found " + orgs.length + " organization records.");
       if (orgs.length === 0) {
         log("No organizations detected. Make sure the state records table is fully");
