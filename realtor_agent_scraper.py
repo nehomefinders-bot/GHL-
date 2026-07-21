@@ -35,6 +35,8 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+BUILD_VERSION = "v3 (stealth)"
+
 # Persistent Chrome profile so cookies / bot-check tokens survive between runs.
 PROFILE_DIR = Path.home() / ".realtor_scraper_chrome"
 
@@ -58,7 +60,7 @@ class RealtorScraper:
     # ------------------------------------------------------------- browser
 
     def start_browser(self):
-        self.log("Launching Chrome (stealth mode)...")
+        self.log(f"Launching Chrome (stealth mode) - build {BUILD_VERSION}...")
         opts = uc.ChromeOptions()
         opts.add_argument("--start-maximized")
         opts.add_argument("--disable-blink-features=AutomationControlled")
@@ -314,7 +316,7 @@ FIELDS = ["name", "name_section", "contact_information", "phones", "website_link
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("Realtor.com Agent Scraper")
+        root.title(f"Realtor.com Agent Scraper - {BUILD_VERSION}")
         root.geometry("720x520")
         root.minsize(560, 400)
 
