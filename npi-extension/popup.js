@@ -188,28 +188,41 @@ function scrapeNpi(maxOrgs) {
       log(maxOrgs && maxOrgs > 0 ? "Limit: first " + maxOrgs + " organization(s)." : "Limit: all organizations.");
 
       // 1) Collect Organization rows from the records table.
+      // NPI detail links are anchors whose href contains the 10-digit NPI number.
+      const npiAnchors = [...document.querySelectorAll("a[href]")].filter((a) => {
+        const href = a.getAttribute("href") || "";
+        return /\d{10}/.test(href) || /\b\d{10}\b/.test(a.textContent || "");
+      });
+      log("Scanning page: " + npiAnchors.length + " NPI links found.");
+
       const orgs = [];
       const seen = new Set();
-      const rows = document.querySelectorAll("table tr");
-      for (const row of rows) {
-        const rowText = row.textContent || "";
-        // Organization rows say "Organization" under the name; skip "Individual".
-        if (!/\bOrganization\b/i.test(rowText)) continue;
-        // The NPI link is the anchor whose text is a 10-digit number.
-        const link = [...row.querySelectorAll("a[href]")].find(
-          (a) => /^\d{10}$/.test((a.textContent || "").trim())
-        );
-        if (!link) continue;
-        const npi = link.textContent.trim();
+      let orgHits = 0, indivHits = 0;
+      for (const a of npiAnchors) {
+        const href = a.getAttribute("href") || "";
+        const m = href.match(/(\d{10})/) || (a.textContent || "").match(/(\d{10})/);
+        if (!m) continue;
+        const npi = m[1];
+        const row =
+          a.closest("tr, [role='row'], li, .list-group-item, .card, .row") ||
+          (a.parentElement && a.parentElement.parentElement) ||
+          a.parentElement;
+        const rowText = row ? row.textContent || "" : "";
+        const isOrg = /\bOrganization\b/i.test(rowText);
+        const isIndiv = /\bIndividual\b/i.test(rowText);
         if (seen.has(npi)) continue;
+        if (isOrg) orgHits++;
+        else if (isIndiv) { indivHits++; continue; }
+        else continue; // couldn't classify - skip to be safe
         seen.add(npi);
-        orgs.push({ npi, url: link.href });
+        orgs.push({ npi, url: a.href });
       }
 
-      log("Found " + orgs.length + " organization records (individuals skipped).");
+      log("Classified rows - Organizations: " + orgHits + ", Individuals skipped: " + indivHits + ".");
+      log("Found " + orgs.length + " organization records.");
       if (orgs.length === 0) {
-        log("No organizations detected. Make sure the state records table is");
-        log("visible on this page, then click Scrape again.");
+        log("No organizations detected. Make sure the state records table is fully");
+        log("loaded/visible on this page, then click Scrape again.");
         return;
       }
 
