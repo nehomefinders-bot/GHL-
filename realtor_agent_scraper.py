@@ -18,9 +18,13 @@ window and the scraper will continue on its own.
 """
 
 import csv
+import os
 import queue
 import random
 import re
+import shutil
+import socket
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -28,17 +32,37 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, scrolledtext
 
-import undetected_chromedriver as uc
+from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-BUILD_VERSION = "v3 (stealth)"
+BUILD_VERSION = "v4 (real-chrome)"
 
 # Persistent Chrome profile so cookies / bot-check tokens survive between runs.
+# This is a dedicated profile (not your everyday one) that Chrome can debug into.
 PROFILE_DIR = Path.home() / ".realtor_scraper_chrome"
+DEBUG_PORT = 9222
+
+
+def find_chrome():
+    """Locate the installed Chrome executable on Windows/macOS/Linux."""
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return (shutil.which("chrome") or shutil.which("google-chrome")
+            or shutil.which("chrome.exe"))
 
 BASE_URL = "https://www.realtor.com/realestateagents"
 # Agent profile links look like /realestateagents/5a14f0e33e033b001386c8f8
@@ -56,19 +80,56 @@ class RealtorScraper:
         self.log = log
         self.stop_event = stop_event
         self.driver = None
+        self._chrome_proc = None
 
     # ------------------------------------------------------------- browser
 
     def start_browser(self):
-        self.log(f"Launching Chrome (stealth mode) - build {BUILD_VERSION}...")
-        opts = uc.ChromeOptions()
-        opts.add_argument("--start-maximized")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument(f"--user-data-dir={PROFILE_DIR}")
-        opts.add_argument("--lang=en-US")
-        # use_subprocess=False keeps it working when frozen into a PyInstaller exe.
-        self.driver = uc.Chrome(options=opts, use_subprocess=False)
+        self.log(f"Starting - build {BUILD_VERSION}...")
+        chrome_path = find_chrome()
+        if not chrome_path:
+            raise RuntimeError(
+                "Google Chrome was not found. Please install Chrome from "
+                "google.com/chrome and try again.")
+        self.log(f"Found Chrome: {chrome_path}")
+
+        # Launch the REAL Chrome browser with a dedicated, persistent profile and
+        # a remote-debugging port. We then attach Selenium to it. This avoids the
+        # chromedriver fingerprints that realtor.com's firewall blocks, and lets
+        # you solve any one-time challenge in a browser the site trusts.
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        self.log("Opening your Chrome browser...")
+        self._chrome_proc = subprocess.Popen(
+            [
+                chrome_path,
+                f"--remote-debugging-port={DEBUG_PORT}",
+                f"--user-data-dir={PROFILE_DIR}",
+                "--start-maximized",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-blink-features=AutomationControlled",
+                BASE_URL,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait for Chrome's debug port to come up.
+        for _ in range(30):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                if s.connect_ex(("127.0.0.1", DEBUG_PORT)) == 0:
+                    break
+            time.sleep(1)
+        else:
+            raise RuntimeError("Chrome did not start in time. Close all Chrome "
+                               "windows and try again.")
+
+        opts = Options()
+        opts.add_experimental_option("debuggerAddress", f"127.0.0.1:{DEBUG_PORT}")
+        self.driver = webdriver.Chrome(options=opts)
         self.driver.set_page_load_timeout(60)
+        self.log("Attached to Chrome. Working...")
 
     def wait_for(self, condition, timeout=25):
         return WebDriverWait(self.driver, timeout).until(condition)
@@ -102,13 +163,17 @@ class RealtorScraper:
 
             if any(m in src for m in self.HARD_BLOCK_MARKERS):
                 hard_tries += 1
-                if hard_tries > 6:
+                if hard_tries == 1:
+                    self.log("realtor.com showed its block page. In the Chrome window, "
+                             "browse realtor.com normally for a few seconds (click "
+                             "around / solve any challenge) - I'll keep retrying and "
+                             "continue as soon as it lets us through.")
+                if hard_tries > 20:
                     raise RuntimeError(
-                        "realtor.com is hard-blocking this connection. Wait a few "
-                        "minutes and try again, or switch networks / VPN.")
-                wait = min(5 * hard_tries, 30)
-                self.log(f"Blocked by realtor.com firewall - retrying in {wait}s "
-                         f"(attempt {hard_tries})...")
+                        "realtor.com kept blocking this connection. Try again later, "
+                        "or switch to a different network / VPN.")
+                wait = min(8 * hard_tries, 40)
+                self.log(f"Still blocked - retrying in {wait}s (attempt {hard_tries})...")
                 time.sleep(wait)
                 self.driver.get(self.driver.current_url)
                 continue
@@ -303,9 +368,15 @@ class RealtorScraper:
                     self.log(f"[{i}/{len(links)}] could not read profile, skipped.")
         finally:
             try:
-                self.driver.quit()
+                if self.driver:
+                    self.driver.quit()
             except WebDriverException:
                 pass
+            if self._chrome_proc:
+                try:
+                    self._chrome_proc.terminate()
+                except OSError:
+                    pass
 
 
 # ------------------------------------------------------------------------ UI
