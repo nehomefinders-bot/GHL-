@@ -15,17 +15,21 @@ A small Windows desktop app that collects real estate agent contact info from
 5. Saves everything to `realtor_agents_<zip>.csv` next to the app — the file is
    updated after every agent, so you never lose progress. Open it in Excel.
 
-## Getting the EXE
+## Getting the app
+
+The app ships as a **zip** (a folder-based build). This avoids the Windows
+Defender false-positive that single-file PyInstaller exes commonly trigger.
 
 **Option A — GitHub builds it for you (no setup needed):**
 Every push to this repo runs the *Build Windows EXE* workflow (see the
-**Actions** tab). Open the latest run and download the **RealtorAgentScraper**
-artifact — the `.exe` is inside the zip.
+**Actions** tab), and commits `RealtorAgentScraper.zip` to the repo. Download
+that zip, **extract it**, and run `RealtorAgentScraper.exe` from inside the
+extracted folder (keep the `_internal` folder next to it).
 
 **Option B — build it yourself on Windows:**
 1. Install [Python 3.10+](https://www.python.org/downloads/) (check "Add to PATH").
 2. Double-click `build_exe.bat`.
-3. Your exe appears at `dist\RealtorAgentScraper.exe`.
+3. Your app appears at `dist\RealtorAgentScraper\` — run the `.exe` in there.
 
 ## Requirements to run
 

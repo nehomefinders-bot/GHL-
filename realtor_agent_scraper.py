@@ -40,7 +40,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-BUILD_VERSION = "v5 (assisted)"
+BUILD_VERSION = "v6 (assisted)"
 
 # Persistent Chrome profile so cookies / bot-check tokens survive between runs.
 # This is a dedicated profile (not your everyday one) that Chrome can debug into.

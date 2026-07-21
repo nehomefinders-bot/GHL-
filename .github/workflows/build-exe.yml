@@ -21,27 +21,35 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller
 
-      - name: Build exe
-        run: pyinstaller --onefile --noconsole --name RealtorAgentScraper --collect-all selenium realtor_agent_scraper.py
+      # --onedir (folder app) instead of --onefile: a single-file exe unpacks
+      # itself at runtime, which Windows Defender heuristics flag as a false
+      # positive. A folder build is rarely flagged. We zip it for distribution.
+      - name: Build app (folder mode)
+        run: pyinstaller --onedir --noconsole --name RealtorAgentScraper --collect-all selenium realtor_agent_scraper.py
 
-      - name: Upload exe artifact
+      - name: Zip the app
+        shell: pwsh
+        run: Compress-Archive -Path dist/RealtorAgentScraper/* -DestinationPath RealtorAgentScraper.zip -Force
+
+      - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: RealtorAgentScraper
-          path: dist/RealtorAgentScraper.exe
+          path: RealtorAgentScraper.zip
 
-      - name: Commit exe to repo for easy download
+      - name: Commit zip to repo for easy download
         shell: pwsh
         run: |
-          Copy-Item dist/RealtorAgentScraper.exe RealtorAgentScraper.exe -Force
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add RealtorAgentScraper.exe
+          # Drop the old single-file exe if it is still tracked.
+          if (Test-Path RealtorAgentScraper.exe) { git rm --quiet RealtorAgentScraper.exe }
+          git add RealtorAgentScraper.zip
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
-            git commit -m "Update RealtorAgentScraper.exe [skip ci]"
+            git commit -m "Update RealtorAgentScraper.zip [skip ci]"
             git push origin "HEAD:$env:GITHUB_REF_NAME"
           } else {
-            Write-Host "Exe unchanged, nothing to commit."
+            Write-Host "Zip unchanged, nothing to commit."
           }
           exit 0
