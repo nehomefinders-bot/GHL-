@@ -22,7 +22,7 @@ jobs:
         run: pip install -r requirements.txt pyinstaller
 
       - name: Build exe
-        run: pyinstaller --onefile --noconsole --name RealtorAgentScraper realtor_agent_scraper.py
+        run: pyinstaller --onefile --noconsole --name RealtorAgentScraper --collect-all selenium realtor_agent_scraper.py
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4
