@@ -3,37 +3,31 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { width: 320px; font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 14px; color: #222; }
+    body { width: 330px; font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 14px; color: #222; }
     h1 { font-size: 15px; margin: 0 0 4px; }
     p.sub { font-size: 11px; color: #666; margin: 0 0 12px; }
-    label { font-size: 12px; font-weight: 600; }
-    .row { display: flex; gap: 8px; margin-top: 6px; }
-    input { flex: 1; font-size: 14px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; }
-    button { background: #c82021; color: #fff; border: none; border-radius: 6px; padding: 7px 12px;
-             font-size: 13px; font-weight: 600; cursor: pointer; }
+    button { background: #c82021; color: #fff; border: none; border-radius: 6px; padding: 9px 12px;
+             font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
     button:disabled { background: #999; cursor: default; }
     #status { font-size: 12px; margin-top: 12px; white-space: pre-wrap; color: #333;
               max-height: 180px; overflow-y: auto; background: #f6f6f6; border-radius: 6px; padding: 8px; }
-    .hint { font-size: 11px; color: #777; margin-top: 10px; line-height: 1.4; }
+    ol { font-size: 11px; color: #555; margin: 10px 0 0; padding-left: 18px; line-height: 1.5; }
   </style>
 </head>
 <body>
   <h1>Realtor.com Agent Scraper</h1>
-  <p class="sub">Grabs agent names + full contact info into a CSV.</p>
+  <p class="sub">Captures agent names + full contact info into a CSV.</p>
 
-  <label for="zip">ZIP code</label>
-  <div class="row">
-    <input id="zip" type="text" inputmode="numeric" maxlength="5" placeholder="e.g. 30002">
-    <button id="go">Scrape</button>
-  </div>
+  <button id="go">Scrape agents on this search</button>
 
-  <div id="status">Open www.realtor.com in this tab first, then enter a ZIP and click Scrape.</div>
+  <div id="status">Loading…</div>
 
-  <div class="hint">
-    Tip: make sure this tab is on <b>www.realtor.com</b> and you can browse it
-    normally (solve any one-time check). Then scrape — it runs inside your real
-    session, so realtor.com won't block it. You can close this popup while it works.
-  </div>
+  <ol>
+    <li>Go to <b>realtor.com</b> &rarr; <b>Find an Agent</b>.</li>
+    <li>Search your ZIP and pick <b>Both</b> so the agent list shows.</li>
+    <li>Click the button above. Keep this tab open; you can close this popup.</li>
+    <li>The CSV downloads automatically when it finishes.</li>
+  </ol>
 
   <script src="popup.js"></script>
 </body>

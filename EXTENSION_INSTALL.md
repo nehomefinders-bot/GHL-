@@ -22,18 +22,22 @@ warnings either, because there's no `.exe`.
 
 ## Use
 
-1. Open a tab and go to **https://www.realtor.com** — browse it normally. If a
-   "press & hold" or other check appears, complete it once (you're a human, so
-   this just works).
-2. Stay on a realtor.com page. Click the **Realtor.com Agent Scraper** toolbar
-   icon.
-3. Type a **5-digit ZIP code** and click **Scrape**.
-4. A black progress box appears on the page. It walks every results page for
-   that ZIP (Both = buy & sell), then opens each agent to grab the name section
-   and full **Contact information**. You can close the little popup — it keeps
-   running.
-5. When it finishes it **auto-downloads** `realtor_agents_<zip>.csv` to your
+1. Go to **https://www.realtor.com** → **Find an Agent**. If a "press & hold" or
+   other check appears, complete it once (you're a human, so this just works).
+2. **Search your ZIP and choose "Both"** so the list of agents is showing on the
+   page.
+3. Click the **Realtor.com Agent Scraper** toolbar icon, then **Scrape agents on
+   this search**.
+4. A black progress box appears on the page. It reads the agent list, walks
+   every results page, and opens each agent (in the background) to grab the name
+   section and full **Contact information**. You can close the little popup — it
+   keeps running.
+5. When it finishes it **auto-downloads** `realtor_agents_<location>.csv` to your
    Downloads folder. Open it in Excel.
+
+> It works by reading the pages the way your browser renders them and loading
+> further pages in hidden background frames within your own session — so
+> realtor.com serves it just like normal clicking, and never blocks it.
 
 ## Notes
 
