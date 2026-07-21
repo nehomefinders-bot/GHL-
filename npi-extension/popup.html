@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 340px; font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 14px; color: #222; }
+    h1 { font-size: 15px; margin: 0 0 4px; }
+    p.sub { font-size: 11px; color: #666; margin: 0 0 12px; }
+    .field { margin: 0 0 10px; }
+    label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+    input { width: 100%; box-sizing: border-box; font-size: 14px; padding: 7px 8px;
+            border: 1px solid #ccc; border-radius: 6px; }
+    .note { font-size: 10px; color: #888; margin-top: 3px; }
+    button { background: #17629c; color: #fff; border: none; border-radius: 6px; padding: 9px 12px;
+             font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
+    button:disabled { background: #999; cursor: default; }
+    #status { font-size: 12px; margin-top: 12px; white-space: pre-wrap; color: #333;
+              max-height: 170px; overflow-y: auto; background: #f4f7fa; border-radius: 6px; padding: 8px; }
+    ol { font-size: 11px; color: #555; margin: 10px 0 0; padding-left: 18px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>NPI Profile Organization Scraper by JAWAD AHMAD</h1>
+  <p class="sub">Captures Organization records (header + Authorized Official) into a CSV.</p>
+
+  <div class="field">
+    <label for="count">Number of organizations to scrape</label>
+    <input id="count" type="text" inputmode="numeric" placeholder="Leave blank = all organizations">
+    <div class="note">e.g. enter 5 to test the first 5 organizations. Blank scrapes them all.</div>
+  </div>
+
+  <button id="go">Scrape organizations</button>
+
+  <div id="status">Loading…</div>
+
+  <ol>
+    <li>On <b>npiprofile.com</b>, click <b>Updates</b> and pick a state.</li>
+    <li>Wait for the state records table to show.</li>
+    <li>Click <b>Scrape organizations</b>. Individual rows are skipped.</li>
+    <li>The CSV downloads automatically when it finishes.</li>
+  </ol>
+
+  <script src="popup.js"></script>
+</body>
+</html>
