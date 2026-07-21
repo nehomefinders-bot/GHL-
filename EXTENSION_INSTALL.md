@@ -26,8 +26,9 @@ warnings either, because there's no `.exe`.
    other check appears, complete it once (you're a human, so this just works).
 2. **Search your ZIP and choose "Both"** so the list of agents is showing on the
    page.
-3. Click the **Realtor.com Agent Scraper** toolbar icon, then **Scrape agents on
-   this search**.
+3. Click the **Realtor.com Agent Scraper** toolbar icon. Optionally type a
+   **number of pages** (e.g. `5`) to test just the first few pages — leave it
+   **blank to scrape every page**. Then click **Scrape agents on this search**.
 4. A black progress box appears on the page. It reads the agent list, walks
    every results page, and opens each agent (in the background) to grab the name
    section and full **Contact information**. You can close the little popup — it

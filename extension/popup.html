@@ -9,6 +9,11 @@
     button { background: #c82021; color: #fff; border: none; border-radius: 6px; padding: 9px 12px;
              font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
     button:disabled { background: #999; cursor: default; }
+    .field { margin: 0 0 10px; }
+    label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+    input { width: 100%; box-sizing: border-box; font-size: 14px; padding: 7px 8px;
+            border: 1px solid #ccc; border-radius: 6px; }
+    .note { font-size: 10px; color: #888; margin-top: 3px; }
     #status { font-size: 12px; margin-top: 12px; white-space: pre-wrap; color: #333;
               max-height: 180px; overflow-y: auto; background: #f6f6f6; border-radius: 6px; padding: 8px; }
     ol { font-size: 11px; color: #555; margin: 10px 0 0; padding-left: 18px; line-height: 1.5; }
@@ -17,6 +22,12 @@
 <body>
   <h1>Realtor.com Agent Scraper</h1>
   <p class="sub">Captures agent names + full contact info into a CSV.</p>
+
+  <div class="field">
+    <label for="pages">Number of pages to scrape</label>
+    <input id="pages" type="text" inputmode="numeric" placeholder="Leave blank = all pages">
+    <div class="note">e.g. enter 5 to test the first 5 pages. Blank scrapes every page.</div>
+  </div>
 
   <button id="go">Scrape agents on this search</button>
 

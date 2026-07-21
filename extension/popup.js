@@ -18,12 +18,24 @@ const setStatus = (m) => (statusBox.textContent = m);
 goBtn.addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
+
+  const raw = document.getElementById("pages").value.trim();
+  let maxPages = 0; // 0 = all pages
+  if (raw !== "") {
+    maxPages = parseInt(raw, 10);
+    if (!Number.isInteger(maxPages) || maxPages < 1) {
+      setStatus("Enter a whole number of pages (1 or more), or leave it blank for all pages.");
+      return;
+    }
+  }
+
   goBtn.disabled = true;
-  setStatus("Started. A black progress box shows on the page.\n" +
-            "You can close this popup - it keeps running. The CSV downloads\n" +
-            "automatically when it's done.");
+  setStatus("Started" + (maxPages ? " (first " + maxPages + " page" + (maxPages > 1 ? "s" : "") + ")" : " (all pages)") +
+            ".\nA black progress box shows on the page. You can close this popup -\n" +
+            "it keeps running. The CSV downloads automatically when it's done.");
   chrome.scripting.executeScript({
     target: { tabId: tab.id },
+    args: [maxPages],
     func: scrapeAgents,
   }).catch((e) => setStatus("Could not start: " + e.message));
 });
@@ -34,7 +46,8 @@ goBtn.addEventListener("click", async () => {
 // agent profile in a hidden SAME-ORIGIN iframe so realtor.com's own JavaScript
 // fills in the data - exactly as if the user clicked through - with no bot block.
 // ---------------------------------------------------------------------------
-function scrapeAgents() {
+function scrapeAgents(maxPages) {
+  const pageCap = maxPages && maxPages > 0 ? maxPages : 120; // 120 = practical "all"
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
   const PROFILE_RE = /\/realestateagents\/([0-9a-f]{24})\b/g;
@@ -165,6 +178,7 @@ function scrapeAgents() {
       }
       const label = (basePath.split("/realestateagents/")[1] || "agents").split("/")[0];
       log("Scraping agents for: " + label);
+      log(maxPages && maxPages > 0 ? "Limit: first " + maxPages + " page(s)." : "Limit: all pages.");
 
       // 1) Collect agent IDs from the current rendered page + every further page.
       const ids = [];
@@ -177,7 +191,7 @@ function scrapeAgents() {
       addIds(idsFromDoc(document));
       log("Page 1: " + ids.length + " agents.");
 
-      for (let page = 2; page <= 120; page++) {
+      for (let page = 2; page <= pageCap; page++) {
         const url = location.origin + basePath + "/pg-" + page;
         const doc = await loadInFrame(url, (d) => idsFromDoc(d).length > 0, 15000);
         const added = doc ? addIds(idsFromDoc(doc)) : 0;
