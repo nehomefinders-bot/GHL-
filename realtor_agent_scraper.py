@@ -9,10 +9,12 @@ walks every result page, opens each agent's profile, and captures:
 
 Results are saved to a CSV file next to the app (realtor_agents_<zip>.csv).
 
-The browser window stays visible on purpose: realtor.com uses bot protection,
-and a real, visible Chrome session is far less likely to be blocked. If a
-"press & hold" or captcha check ever appears, solve it in the browser window
-and the scraper will continue on its own.
+The browser window stays visible on purpose: realtor.com uses bot protection
+(HUMAN / PerimeterX). We drive it with undetected-chromedriver, which strips the
+automation fingerprints that trip that firewall, and we keep a persistent Chrome
+profile so once you clear a challenge the site keeps trusting you. If a
+"press & hold" or captcha check ever appears, solve it once in the browser
+window and the scraper will continue on its own.
 """
 
 import csv
@@ -26,13 +28,15 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, scrolledtext
 
-from selenium import webdriver
+import undetected_chromedriver as uc
 from selenium.common.exceptions import TimeoutException, WebDriverException
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+
+# Persistent Chrome profile so cookies / bot-check tokens survive between runs.
+PROFILE_DIR = Path.home() / ".realtor_scraper_chrome"
 
 BASE_URL = "https://www.realtor.com/realestateagents"
 # Agent profile links look like /realestateagents/5a14f0e33e033b001386c8f8
@@ -54,37 +58,60 @@ class RealtorScraper:
     # ------------------------------------------------------------- browser
 
     def start_browser(self):
-        self.log("Launching Chrome...")
-        opts = Options()
+        self.log("Launching Chrome (stealth mode)...")
+        opts = uc.ChromeOptions()
         opts.add_argument("--start-maximized")
         opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-        opts.add_experimental_option("useAutomationExtension", False)
-        self.driver = webdriver.Chrome(options=opts)
-        self.driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
-        )
+        opts.add_argument(f"--user-data-dir={PROFILE_DIR}")
+        opts.add_argument("--lang=en-US")
+        # use_subprocess=False keeps it working when frozen into a PyInstaller exe.
+        self.driver = uc.Chrome(options=opts, use_subprocess=False)
         self.driver.set_page_load_timeout(60)
 
     def wait_for(self, condition, timeout=25):
         return WebDriverWait(self.driver, timeout).until(condition)
 
+    CHALLENGE_MARKERS = ("press & hold", "press and hold", "are you a human",
+                         "verify you are human")
+    HARD_BLOCK_MARKERS = ("your request could not be processed",
+                          "access to this page has been denied",
+                          "reference id is")
+
     def wait_out_bot_check(self):
-        """If a bot-protection interstitial shows up, wait for the user to clear it."""
+        """Handle realtor.com's bot firewall.
+
+        - "press & hold" style challenge: wait for the user to solve it.
+        - hard block page ("request could not be processed"): reload with a
+          short backoff; the persistent profile usually gets waved through
+          after a couple of tries.
+        """
         warned = False
+        hard_tries = 0
         while not self.stop_event.is_set():
             src = self.driver.page_source.lower()
-            blocked = any(
-                marker in src
-                for marker in ("press & hold", "press and hold", "are you a human", "access to this page has been denied")
-            )
-            if not blocked:
-                return
-            if not warned:
-                self.log("Bot check detected - please complete it in the Chrome window...")
-                warned = True
-            time.sleep(2)
+
+            if any(m in src for m in self.CHALLENGE_MARKERS):
+                if not warned:
+                    self.log("Bot check detected - please complete the 'press & hold' "
+                             "in the Chrome window; I'll continue automatically...")
+                    warned = True
+                time.sleep(2)
+                continue
+
+            if any(m in src for m in self.HARD_BLOCK_MARKERS):
+                hard_tries += 1
+                if hard_tries > 6:
+                    raise RuntimeError(
+                        "realtor.com is hard-blocking this connection. Wait a few "
+                        "minutes and try again, or switch networks / VPN.")
+                wait = min(5 * hard_tries, 30)
+                self.log(f"Blocked by realtor.com firewall - retrying in {wait}s "
+                         f"(attempt {hard_tries})...")
+                time.sleep(wait)
+                self.driver.get(self.driver.current_url)
+                continue
+
+            return
 
     # -------------------------------------------------------------- search
 
