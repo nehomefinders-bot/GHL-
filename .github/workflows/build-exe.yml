@@ -5,6 +5,9 @@ on:
     branches: ["**"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -26,3 +29,19 @@ jobs:
         with:
           name: RealtorAgentScraper
           path: dist/RealtorAgentScraper.exe
+
+      - name: Commit exe to repo for easy download
+        shell: pwsh
+        run: |
+          Copy-Item dist/RealtorAgentScraper.exe RealtorAgentScraper.exe -Force
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add RealtorAgentScraper.exe
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Update RealtorAgentScraper.exe [skip ci]"
+            git push origin "HEAD:$env:GITHUB_REF_NAME"
+          } else {
+            Write-Host "Exe unchanged, nothing to commit."
+          }
+          exit 0
