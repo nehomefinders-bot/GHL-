@@ -187,49 +187,44 @@ function scrapeNpi(maxOrgs) {
       log("NPI Organization scraper started for: " + label);
       log(maxOrgs && maxOrgs > 0 ? "Limit: first " + maxOrgs + " organization(s)." : "Limit: all organizations.");
 
-      // 1) Collect Organization rows from the records table.
-      // NPI detail links are anchors whose href contains the 10-digit NPI number.
-      const npiAnchors = [...document.querySelectorAll("a[href]")].filter((a) => {
-        const href = a.getAttribute("href") || "";
-        return /\d{10}/.test(href) || /\b\d{10}\b/.test(a.textContent || "");
-      });
-      log("Scanning page: " + npiAnchors.length + " NPI links found.");
+      // 1) Find the "Organization" type labels, then map each to its NPI link.
+      const hasNpiLink = (el) =>
+        [...el.querySelectorAll("a[href]")].find(
+          (a) => /\d{10}/.test(a.getAttribute("href") || "")
+        );
+
+      let orgLabels = [...document.querySelectorAll("em,i,span,small,div,td,p,label")].filter(
+        (e) => clean(e.textContent).toLowerCase() === "organization"
+      );
+      if (orgLabels.length === 0) {
+        orgLabels = [...document.querySelectorAll("*")].filter(
+          (e) => e.children.length === 0 &&
+                 /\borganization\b/i.test(e.textContent || "") &&
+                 (e.textContent || "").trim().length < 25
+        );
+      }
+      log("Found " + orgLabels.length + " 'Organization' labels on the page.");
 
       const orgs = [];
-      const processed = new Set();
-      let orgHits = 0, indivHits = 0, unknown = 0;
-      for (const a of npiAnchors) {
-        const href = a.getAttribute("href") || "";
-        const m = href.match(/(\d{10})/) || (a.textContent || "").match(/(\d{10})/);
-        if (!m) continue;
-        const npi = m[1];
-        if (processed.has(npi)) continue;
-
-        // Climb up until we reach the first ancestor that says which type it is.
-        let isOrg = false, isIndiv = false;
-        let node = a;
-        for (let i = 0; i < 10 && node; i++) {
-          const t = node.textContent || "";
-          const hasOrg = /\bOrganization\b/i.test(t);
-          const hasInd = /\bIndividual\b/i.test(t);
-          if (hasOrg || hasInd) {
-            // Prefer the more specific one if only one is present at this level.
-            if (hasOrg && !hasInd) isOrg = true;
-            else if (hasInd && !hasOrg) isIndiv = true;
-            else { isOrg = hasOrg; } // both present (climbed too far) - default org
-            break;
-          }
+      const seen = new Set();
+      for (const lab of orgLabels) {
+        let node = lab, link = null;
+        for (let i = 0; i < 25 && node; i++) {
+          const found = hasNpiLink(node);
+          if (found) { link = found; break; }
           node = node.parentElement;
         }
-
-        if (isOrg) { orgHits++; processed.add(npi); orgs.push({ npi, url: a.href }); }
-        else if (isIndiv) { indivHits++; processed.add(npi); }
-        else { unknown++; }
+        if (!link) continue;
+        const href = link.getAttribute("href") || "";
+        const m = href.match(/(\d{10})/) || (link.textContent || "").match(/(\d{10})/);
+        if (!m) continue;
+        const npi = m[1];
+        if (seen.has(npi)) continue;
+        seen.add(npi);
+        orgs.push({ npi, url: link.href });
       }
 
-      log("Classified - Organizations: " + orgHits + ", Individuals skipped: " +
-          indivHits + (unknown ? ", unclassified: " + unknown : "") + ".");
-      log("Found " + orgs.length + " organization records.");
+      log("Found " + orgs.length + " organization records (individuals skipped).");
       if (orgs.length === 0) {
         log("No organizations detected. Make sure the state records table is fully");
         log("loaded/visible on this page, then click Scrape again.");
