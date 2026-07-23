@@ -6,4 +6,9 @@
 # Optional: set a page limit for testing by adding a line like:  pages: 2
 # (leave it out to scrape all pages)
 
-30002
+pages: 1
+
+30303
+30305
+30309
+30334
