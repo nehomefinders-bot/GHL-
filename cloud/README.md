@@ -30,16 +30,27 @@ card or a paid plan. **GitHub Actions runs your code on GitHub's servers for
 free, no card, and keeps running with your PC off.** This repo already includes
 the workflow.
 
-1. Push this repo to GitHub (already done if you're reading this here).
-2. On GitHub, open the **Actions** tab → **Scrape Realtor Zips** →
-   **Run workflow**.
-3. Enter your **zip codes** (comma / space / newline separated) and optional
-   **max pages per zip**, then **Run workflow**.
-4. It runs on GitHub's servers. When it finishes, open the run and download the
-   **realtor-csvs** artifact — it contains one `realtor_agents_<zip>.csv` per zip.
-5. To get past realtor.com's block, add a residential proxy: repo **Settings →
-   Secrets and variables → Actions → New repository secret** named
-   `SCRAPER_PROXY` = `http://USER:PASS@HOST:PORT`.
+### Easiest: edit `cloud/zips.txt` (no button needed)
+
+1. On GitHub, open **`cloud/zips.txt`** → click the **pencil (Edit)** icon.
+2. Put your **zip codes, one per line** (delete the sample). Optional: add a line
+   `pages: 2` to limit pages per zip for testing.
+3. Click **Commit changes**. That commit **automatically starts the scraper**.
+4. Open the **Actions** tab → the running **Scrape Realtor Zips** job → when it
+   finishes, download the **realtor-csvs** artifact (one `realtor_agents_<zip>.csv`
+   per zip).
+
+Re-run any time by editing `cloud/zips.txt` again and committing.
+
+### Or: the Run workflow button (if it shows)
+
+Actions tab → **Scrape Realtor Zips** → **Run workflow** → paste zips → Run.
+(If that button isn't visible, just use the `zips.txt` method above.)
+
+### Get past realtor.com's block
+
+Add a residential proxy: repo **Settings → Secrets and variables → Actions → New
+repository secret** named `SCRAPER_PROXY` = `http://USER:PASS@HOST:PORT`.
 
 Runs can last up to ~6 hours; free minutes are generous (unlimited for public
 repos). This is the best free option for unattended, PC-off runs.

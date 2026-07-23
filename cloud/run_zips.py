@@ -11,14 +11,36 @@ import re
 from scraper import make_driver, scrape_zip, FIELDS
 
 
+def read_zips_file():
+    """Fallback input: read zip codes (and optional 'pages: N') from zips.txt."""
+    path = os.path.join(os.path.dirname(__file__), "zips.txt")
+    zips, max_pages = [], 0
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                mp = re.match(r"pages?\s*[:=]\s*(\d+)", s, re.I)
+                if mp:
+                    max_pages = int(mp.group(1))
+                    continue
+                zips += re.findall(r"\d{5}", s)
+    return zips, max_pages
+
+
 def main():
     zips = re.findall(r"\d{5}", os.environ.get("ZIPS", ""))
     max_pages = int(os.environ.get("MAX_PAGES") or 0)
+    if not zips:  # no manual inputs -> use the committed zips.txt
+        zips, file_pages = read_zips_file()
+        if not max_pages:
+            max_pages = file_pages
     outdir = os.environ.get("OUTPUT_DIR", "outputs")
     os.makedirs(outdir, exist_ok=True)
 
     if not zips:
-        print("No zip codes provided in ZIPS.")
+        print("No zip codes found (ZIPS env empty and cloud/zips.txt has none).")
         return
     print(f"Scraping {len(zips)} zip(s): {', '.join(zips)}", flush=True)
 

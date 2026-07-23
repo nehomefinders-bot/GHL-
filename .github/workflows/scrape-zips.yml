@@ -1,8 +1,14 @@
 name: Scrape Realtor Zips
 
-# Free cloud runs on GitHub's servers - no credit card, and it keeps running
-# with your PC off. Trigger it from the Actions tab: "Run workflow", paste zips.
+# Free cloud runs on GitHub's servers - no credit card, keeps running with your
+# PC off. Two ways to start it:
+#   1) Edit cloud/zips.txt (put your zips, one per line) and commit -> auto-runs.
+#   2) Actions tab -> Run workflow (if the button shows) and paste zips.
 on:
+  push:
+    branches: ["**"]
+    paths:
+      - "cloud/zips.txt"
   workflow_dispatch:
     inputs:
       zips:
