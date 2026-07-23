@@ -23,7 +23,32 @@ going **even if you close your browser or shut down your PC**.
   page (which auto-refreshes while running).
 - `/health` endpoint for uptime pings.
 
-## Deploy free on Hugging Face Spaces (NO credit card) — recommended
+## ✅ Truly free, no card: GitHub Actions (recommended)
+
+Most "free" hosts (Render, Railway, Fly, Hugging Face Docker) now need a credit
+card or a paid plan. **GitHub Actions runs your code on GitHub's servers for
+free, no card, and keeps running with your PC off.** This repo already includes
+the workflow.
+
+1. Push this repo to GitHub (already done if you're reading this here).
+2. On GitHub, open the **Actions** tab → **Scrape Realtor Zips** →
+   **Run workflow**.
+3. Enter your **zip codes** (comma / space / newline separated) and optional
+   **max pages per zip**, then **Run workflow**.
+4. It runs on GitHub's servers. When it finishes, open the run and download the
+   **realtor-csvs** artifact — it contains one `realtor_agents_<zip>.csv` per zip.
+5. To get past realtor.com's block, add a residential proxy: repo **Settings →
+   Secrets and variables → Actions → New repository secret** named
+   `SCRAPER_PROXY` = `http://USER:PASS@HOST:PORT`.
+
+Runs can last up to ~6 hours; free minutes are generous (unlimited for public
+repos). This is the best free option for unattended, PC-off runs.
+
+## Deploy on Hugging Face Spaces (now needs a paid plan)
+
+> Heads up: Hugging Face now requires a **paid** plan for Docker Spaces (only
+> Static HTML Spaces are free), so this path is no longer free. Kept here for
+> reference / if you have a paid plan.
 
 Render/Railway/Fly all ask for a card now. **Hugging Face Spaces is free, needs
 no card, and gives more RAM (good for Chromium).** It also only sleeps after
