@@ -3,41 +3,47 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { width: 330px; font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 14px; color: #222; }
+    body { width: 340px; font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 14px; color: #222; }
     h1 { font-size: 15px; margin: 0 0 4px; }
     p.sub { font-size: 11px; color: #666; margin: 0 0 12px; }
-    button { background: #c82021; color: #fff; border: none; border-radius: 6px; padding: 9px 12px;
-             font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
-    button:disabled { background: #999; cursor: default; }
     .field { margin: 0 0 10px; }
     label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+    textarea { width: 100%; box-sizing: border-box; height: 92px; font: 13px monospace; padding: 7px 8px;
+               border: 1px solid #ccc; border-radius: 6px; resize: vertical; }
     input { width: 100%; box-sizing: border-box; font-size: 14px; padding: 7px 8px;
             border: 1px solid #ccc; border-radius: 6px; }
     .note { font-size: 10px; color: #888; margin-top: 3px; }
+    button { background: #c82021; color: #fff; border: none; border-radius: 6px; padding: 9px 12px;
+             font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
+    button:disabled { background: #999; cursor: default; }
     #status { font-size: 12px; margin-top: 12px; white-space: pre-wrap; color: #333;
-              max-height: 180px; overflow-y: auto; background: #f6f6f6; border-radius: 6px; padding: 8px; }
+              max-height: 150px; overflow-y: auto; background: #f6f6f6; border-radius: 6px; padding: 8px; }
     ol { font-size: 11px; color: #555; margin: 10px 0 0; padding-left: 18px; line-height: 1.5; }
   </style>
 </head>
 <body>
   <h1>Realtor.com Agent Scraper by JAWAD AHMAD</h1>
-  <p class="sub">Captures agent names + full contact info into a CSV.</p>
+  <p class="sub">Paste a list of ZIPs &mdash; it scrapes each one and saves a CSV per ZIP.</p>
 
   <div class="field">
-    <label for="pages">Number of pages to scrape</label>
-    <input id="pages" type="text" inputmode="numeric" placeholder="Leave blank = all pages">
-    <div class="note">e.g. enter 5 to test the first 5 pages. Blank scrapes every page.</div>
+    <label for="zips">ZIP codes (one per line)</label>
+    <textarea id="zips" placeholder="30002&#10;78628&#10;76522"></textarea>
   </div>
 
-  <button id="go">Scrape agents on this search</button>
+  <div class="field">
+    <label for="pages">Max pages per ZIP</label>
+    <input id="pages" type="text" inputmode="numeric" placeholder="Leave blank = all pages">
+    <div class="note">e.g. 5 to test. Blank = every page for each ZIP.</div>
+  </div>
+
+  <button id="go">Scrape all ZIPs</button>
 
   <div id="status">Loading…</div>
 
   <ol>
-    <li>Go to <b>realtor.com</b> &rarr; <b>Find an Agent</b>.</li>
-    <li>Search your ZIP and pick <b>Both</b> so the agent list shows.</li>
-    <li>Click the button above. Keep this tab open; you can close this popup.</li>
-    <li>The CSV downloads automatically when it finishes.</li>
+    <li>Open <b>realtor.com</b> and browse once (clear any bot check).</li>
+    <li>Paste your ZIPs above, click <b>Scrape all ZIPs</b>.</li>
+    <li>Keep the tab open; you can close this popup. A CSV downloads per ZIP.</li>
   </ol>
 
   <script src="popup.js"></script>
