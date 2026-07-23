@@ -23,45 +23,53 @@ going **even if you close your browser or shut down your PC**.
   page (which auto-refreshes while running).
 - `/health` endpoint for uptime pings.
 
-## Deploy free on Render.com (easiest)
+## Deploy free on Hugging Face Spaces (NO credit card) — recommended
 
-1. Push this repo to GitHub (already done if you're reading this there).
-2. Create a free account at <https://render.com> and connect your GitHub.
-3. Click **New + → Blueprint**, pick this repo. Render reads `cloud/render.yaml`
-   and builds the Docker service on the **free** plan.
-   - (Or **New + → Web Service → Docker**, set root/context to `cloud`.)
-4. When it's live you get a URL like `https://realtor-agent-scraper.onrender.com`.
-5. Open it, paste zip codes, click **Start scraping**.
+Render/Railway/Fly all ask for a card now. **Hugging Face Spaces is free, needs
+no card, and gives more RAM (good for Chromium).** It also only sleeps after
+~48h idle (not 15 min), so a long job keeps running with your PC off.
 
-### Keep it awake with your PC off (free)
+1. Make a free account at <https://huggingface.co/join> (no card).
+2. Go to <https://huggingface.co/new-space>:
+   - **Space name**: e.g. `realtor-agent-scraper`
+   - **SDK**: choose **Docker** → **Blank**
+   - Visibility: Public is fine (or Private).
+   - Click **Create Space**.
+3. On the Space page open the **Files** tab → **Add file → Upload files**, and
+   upload these four files from the `cloud/` folder:
+   - `Dockerfile`
+   - `app.py`
+   - `scraper.py`
+   - `requirements.txt`
+   Commit. The Space builds automatically (a few minutes — watch the **Logs**).
+4. When it says *Running*, click **App**. Your URL looks like
+   `https://<username>-realtor-agent-scraper.hf.space`.
+5. Paste zip codes, click **Start scraping**. The job runs on Hugging Face's
+   server — close your browser / PC and it keeps going.
 
-Render's free plan sleeps a service after ~15 minutes with no web traffic. To
-keep a long job running while your PC is off, add a free uptime pinger:
-
-1. Sign up at <https://uptimerobot.com> (free) or <https://cron-job.org> (free).
-2. Add an HTTP monitor for `https://<your-app>.onrender.com/health` every 5 min.
-
-That steady ping keeps the instance awake so the background scrape continues.
+> The app listens on port **7860**, which is what Docker Spaces expect — no extra
+> config needed.
 
 ### Make it actually get past realtor.com (residential proxy)
 
-In Render → your service → **Environment** → add:
+Cloud IPs are blocked by realtor.com. To fix, add a proxy env var:
+Space → **Settings** → **Variables and secrets** → **New secret**:
 
 ```
 SCRAPER_PROXY = http://USER:PASS@HOST:PORT
 ```
 
-Use a **residential** proxy (e.g. from a provider's free trial). Datacenter
-proxies are usually blocked too. Redeploy; no code change needed.
+Use a **residential** proxy (many providers have free trials). Datacenter
+proxies are usually blocked too. The Space restarts and uses it — no code change.
 
-## Other free hosts
+## Other hosts (these ask for a card)
 
-- **Railway** (<https://railway.app>) — deploy from GitHub, $5 free trial credit,
-  stays up continuously (good for unattended runs).
-- **Fly.io** (<https://fly.io>) — `fly launch` in the `cloud/` folder; free
-  allowance keeps a small VM running.
+- **Render** (<https://render.com>) — `cloud/render.yaml` blueprint is included,
+  but the free plan now requires card verification.
+- **Railway** (<https://railway.app>) — $5 trial credit, card required.
+- **Fly.io** (<https://fly.io>) — `fly launch` in `cloud/`, card required.
 
-Both use the same `Dockerfile`.
+All use the same `Dockerfile`.
 
 ## Run locally (optional)
 
