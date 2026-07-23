@@ -6,10 +6,13 @@ datacenter IPs aggressively - set the SCRAPER_PROXY env var to a (residential)
 proxy to get through from a cloud host.
 """
 
+import json
 import os
 import re
+import tempfile
 import time
 import random
+from urllib.parse import urlparse
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -31,6 +34,54 @@ def _pause(lo=1.0, hi=2.5):
     time.sleep(random.uniform(lo, hi))
 
 
+def _build_proxy_auth_extension(scheme, host, port, user, password):
+    """A tiny unpacked extension that points Chrome at an authenticated proxy
+    and answers the proxy auth challenge - the reliable way to use user:pass
+    proxies in headless Chrome."""
+    manifest = {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Proxy Auth",
+        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage",
+                        "<all_urls>", "webRequest", "webRequestBlocking"],
+        "background": {"scripts": ["background.js"]},
+        "minimum_chrome_version": "22.0.0",
+    }
+    background = """
+var config = {
+  mode: "fixed_servers",
+  rules: { singleProxy: { scheme: "%s", host: "%s", port: parseInt(%s) },
+           bypassList: ["localhost"] }
+};
+chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+chrome.webRequest.onAuthRequired.addListener(
+  function(details) { return { authCredentials: { username: "%s", password: "%s" } }; },
+  { urls: ["<all_urls>"] },
+  ['blocking']
+);
+""" % (scheme, host, port, user, password)
+    d = tempfile.mkdtemp(prefix="proxyauth_")
+    with open(os.path.join(d, "manifest.json"), "w") as f:
+        json.dump(manifest, f)
+    with open(os.path.join(d, "background.js"), "w") as f:
+        f.write(background)
+    return d
+
+
+def _apply_proxy(opts):
+    proxy = os.environ.get("SCRAPER_PROXY")
+    if not proxy:
+        return
+    p = urlparse(proxy if "://" in proxy else "http://" + proxy)
+    scheme = (p.scheme or "http").replace("https", "http")  # proxy transport
+    host, port = p.hostname, p.port or 80
+    if p.username and p.password:
+        ext = _build_proxy_auth_extension(scheme, host, port, p.username, p.password)
+        opts.add_argument(f"--load-extension={ext}")
+    else:
+        opts.add_argument(f"--proxy-server={scheme}://{host}:{port}")
+
+
 def make_driver():
     opts = Options()
     opts.add_argument("--headless=new")
@@ -42,9 +93,7 @@ def make_driver():
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument(f"--user-agent={USER_AGENT}")
 
-    proxy = os.environ.get("SCRAPER_PROXY")
-    if proxy:
-        opts.add_argument(f"--proxy-server={proxy}")
+    _apply_proxy(opts)
 
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin:
