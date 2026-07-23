@@ -190,8 +190,8 @@ def scrape_zip(driver, zip_code, log, max_pages=0, stop=lambda: False):
             if page == 1:
                 raise RuntimeError("blocked")
             break
-        # let the client-side list render
-        for _ in range(20):
+        # let the client-side list render (proxies are slow -> wait up to ~30s)
+        for _ in range(60):
             if _profile_links(driver):
                 break
             time.sleep(0.5)
@@ -199,6 +199,18 @@ def scrape_zip(driver, zip_code, log, max_pages=0, stop=lambda: False):
         all_links.extend(links)
         log(f"  zip {zip_code}: page {page} -> +{len(links)} (total {len(all_links)})")
         if not links:
+            if page == 1:
+                # Diagnose what realtor.com actually served (block? challenge? empty?)
+                try:
+                    diag = driver.execute_script(
+                        "return {u: location.href, t: document.title, "
+                        "b: (document.body ? document.body.innerText.slice(0,220) : '')};"
+                    )
+                    log(f"  zip {zip_code}: DIAG url={diag.get('u')}")
+                    log(f"  zip {zip_code}: DIAG title={diag.get('t')}")
+                    log(f"  zip {zip_code}: DIAG text={(diag.get('b') or '').replace(chr(10),' ')}")
+                except WebDriverException:
+                    pass
             break
         _pause()
 
