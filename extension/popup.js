@@ -5,13 +5,11 @@ const setStatus = (m) => (statusBox.textContent = m);
 (async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !/^https:\/\/www\.realtor\.com\//.test(tab.url || "")) {
-    setStatus("Open www.realtor.com and search for agents first, then click the button.");
+    setStatus("Open www.realtor.com in this tab and browse once (clear any bot\n" +
+              "check), then paste your ZIPs and click the button.");
     goBtn.disabled = true;
-  } else if (!/\/realestateagents\//.test(tab.url)) {
-    setStatus("You're on realtor.com. Now go to Find an Agent, search your ZIP and\n" +
-              "pick 'Both' so the agent list shows, then click the button.");
   } else {
-    setStatus("Ready. Click the button to capture every agent on this search.");
+    setStatus("Ready. Paste ZIP codes (one per line) and click Scrape all ZIPs.");
   }
 })();
 
@@ -19,47 +17,52 @@ goBtn.addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
 
+  const zips = (document.getElementById("zips").value.match(/\d{5}/g) || []);
+  if (zips.length === 0) {
+    setStatus("Enter at least one 5-digit ZIP code (one per line).");
+    return;
+  }
   const raw = document.getElementById("pages").value.trim();
-  let maxPages = 0; // 0 = all pages
+  let maxPages = 0;
   if (raw !== "") {
     maxPages = parseInt(raw, 10);
     if (!Number.isInteger(maxPages) || maxPages < 1) {
-      setStatus("Enter a whole number of pages (1 or more), or leave it blank for all pages.");
+      setStatus("Max pages must be a whole number (1+), or blank for all pages.");
       return;
     }
   }
 
   goBtn.disabled = true;
-  setStatus("Started" + (maxPages ? " (first " + maxPages + " page" + (maxPages > 1 ? "s" : "") + ")" : " (all pages)") +
+  setStatus(`Started ${zips.length} ZIP(s)` +
+            (maxPages ? ` (first ${maxPages} page${maxPages > 1 ? "s" : ""} each)` : " (all pages each)") +
             ".\nA black progress box shows on the page. You can close this popup -\n" +
-            "it keeps running. The CSV downloads automatically when it's done.");
+            "it keeps running. A CSV downloads after each ZIP finishes.");
   chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    args: [maxPages],
-    func: scrapeAgents,
+    args: [zips, maxPages],
+    func: scrapeZips,
   }).catch((e) => setStatus("Could not start: " + e.message));
 });
 
 // ---------------------------------------------------------------------------
-// Runs INSIDE the realtor.com page, in the user's real session. It reads the
-// already-rendered agent list, and loads each further results page and each
-// agent profile in a hidden SAME-ORIGIN iframe so realtor.com's own JavaScript
-// fills in the data - exactly as if the user clicked through - with no bot block.
+// Runs INSIDE the realtor.com page, in the user's real session. For each ZIP it
+// loads the results pages and each agent profile in hidden SAME-ORIGIN iframes
+// (so realtor.com's own JavaScript fills in the data, exactly like clicking),
+// then downloads a CSV for that ZIP before moving to the next.
 // ---------------------------------------------------------------------------
-function scrapeAgents(maxPages) {
-  const pageCap = maxPages && maxPages > 0 ? maxPages : 120; // 120 = practical "all"
+function scrapeZips(zips, maxPages) {
+  const pageCap = maxPages && maxPages > 0 ? maxPages : 120;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
   const PROFILE_RE = /\/realestateagents\/([0-9a-f]{24})\b/g;
 
-  // ----- progress panel (survives the popup closing) -----
   let panel = document.getElementById("__ra_scraper_panel");
   if (!panel) {
     panel = document.createElement("div");
     panel.id = "__ra_scraper_panel";
     panel.style.cssText =
-      "position:fixed;top:12px;right:12px;z-index:2147483647;width:330px;" +
-      "max-height:75vh;overflow:auto;background:#111;color:#0f0;font:12px/1.5 " +
+      "position:fixed;top:12px;right:12px;z-index:2147483647;width:340px;" +
+      "max-height:80vh;overflow:auto;background:#111;color:#0f0;font:12px/1.5 " +
       "Consolas,monospace;padding:12px;border-radius:8px;box-shadow:0 4px 18px " +
       "rgba(0,0,0,.5);white-space:pre-wrap;";
     document.body.appendChild(panel);
@@ -67,11 +70,10 @@ function scrapeAgents(maxPages) {
   const lines = [];
   const log = (m) => {
     lines.push(m);
-    panel.textContent = lines.slice(-250).join("\n");
+    panel.textContent = lines.slice(-300).join("\n");
     panel.scrollTop = panel.scrollHeight;
   };
 
-  // ----- load a same-origin URL in a hidden iframe and wait for it to render -----
   function loadInFrame(url, isReady, timeoutMs) {
     return new Promise((resolve) => {
       const frame = document.createElement("iframe");
@@ -87,9 +89,9 @@ function scrapeAgents(maxPages) {
         const started = Date.now();
         while (Date.now() - started < timeoutMs) {
           let doc = null;
-          try { doc = frame.contentDocument; } catch (e) { break; } // cross-origin - give up
-          if (doc && isReady(doc)) { finish(doc); return; }
-          await sleep(400);
+          try { doc = frame.contentDocument; } catch (e) { break; }
+          if (doc && isReady(doc)) { await sleep(250); finish(frame.contentDocument); return; }
+          await sleep(350);
         }
         let doc = null;
         try { doc = frame.contentDocument; } catch (e) {}
@@ -97,18 +99,24 @@ function scrapeAgents(maxPages) {
       };
       frame.src = url;
       document.body.appendChild(frame);
-      setTimeout(() => finish(frame.contentDocument), timeoutMs + 3000);
+      setTimeout(() => { try { finish(frame.contentDocument); } catch (e) { finish(null); } }, timeoutMs + 3000);
     });
   }
 
   const idsFromDoc = (doc) => {
-    const html = doc.documentElement ? doc.documentElement.innerHTML : "";
+    const html = doc && doc.documentElement ? doc.documentElement.innerHTML : "";
     const out = [];
     let m;
     PROFILE_RE.lastIndex = 0;
     while ((m = PROFILE_RE.exec(html)) !== null) out.push(m[1]);
     return out;
   };
+
+  function isBlocked(doc) {
+    const t = (doc && doc.body ? doc.body.innerText : "").toLowerCase();
+    return t.includes("your request could not be processed") ||
+           t.includes("access to this page has been denied");
+  }
 
   function parseProfile(doc, url) {
     const h1 = doc.querySelector("h1");
@@ -166,74 +174,60 @@ function scrapeAgents(maxPages) {
     a.remove();
   }
 
+  async function scrapeOneZip(zip) {
+    const base = location.origin + "/realestateagents/" + zip + "/intent-buy-sell";
+    const ids = [];
+    const seen = new Set();
+    for (let page = 1; page <= pageCap; page++) {
+      const url = base + "/pg-" + page;
+      const doc = await loadInFrame(url, (d) => idsFromDoc(d).length > 0 || isBlocked(d), 15000);
+      if (doc && isBlocked(doc)) {
+        log(`  ${zip}: blocked on page ${page}. Browse realtor.com in this tab, then retry.`);
+        break;
+      }
+      const pageIds = doc ? idsFromDoc(doc) : [];
+      let added = 0;
+      for (const id of pageIds) if (!seen.has(id)) { seen.add(id); ids.push(id); added++; }
+      log(`  ${zip}: page ${page} -> +${added} (total ${ids.length})`);
+      if (added === 0) break;
+      await sleep(500);
+    }
+
+    const rows = [];
+    for (let i = 0; i < ids.length; i++) {
+      const url = location.origin + "/realestateagents/" + ids[i];
+      const ready = (d) =>
+        d.querySelector("h1") &&
+        [...d.querySelectorAll("h1,h2,h3,h4")].some(
+          (h) => clean(h.textContent).toLowerCase() === "contact information"
+        );
+      const doc = await loadInFrame(url, ready, 12000);
+      if (doc && doc.querySelector("h1")) {
+        rows.push(parseProfile(doc, url));
+        log(`  ${zip}: [${i + 1}/${ids.length}] ${clean(doc.querySelector("h1").textContent) || "(no name)"}`);
+      } else {
+        log(`  ${zip}: [${i + 1}/${ids.length}] could not read, skipped.`);
+      }
+      await sleep(400);
+    }
+    return rows;
+  }
+
   (async () => {
     try {
-      // Base results path (strip any /pg-N), so we can page through the search.
-      const basePath = location.pathname.replace(/\/pg-\d+\/?$/, "").replace(/\/+$/, "");
-      if (!/\/realestateagents\/.+/.test(basePath)) {
-        log("This doesn't look like an agent results page.");
-        log("Go to Find an Agent, search your ZIP, pick 'Both' so the agent");
-        log("list is showing, then click Scrape again.");
-        return;
+      log(`Scraping ${zips.length} ZIP(s): ${zips.join(", ")}`);
+      log(maxPages && maxPages > 0 ? `Limit: first ${maxPages} page(s) each.` : "Limit: all pages each.");
+      let grand = 0;
+      for (let z = 0; z < zips.length; z++) {
+        const zip = zips[z];
+        log(`=== ZIP ${zip} (${z + 1}/${zips.length}) ===`);
+        const rows = await scrapeOneZip(zip);
+        download(toCSV(rows), "realtor_agents_" + zip + ".csv");
+        grand += rows.length;
+        log(`=== ZIP ${zip}: saved ${rows.length} agents -> realtor_agents_${zip}.csv ===`);
+        await sleep(800);
       }
-      const label = (basePath.split("/realestateagents/")[1] || "agents").split("/")[0];
-      log("Scraping agents for: " + label);
-      log(maxPages && maxPages > 0 ? "Limit: first " + maxPages + " page(s)." : "Limit: all pages.");
-
-      // 1) Collect agent IDs from the current rendered page + every further page.
-      const ids = [];
-      const seen = new Set();
-      const addIds = (arr) => {
-        let n = 0;
-        for (const id of arr) if (!seen.has(id)) { seen.add(id); ids.push(id); n++; }
-        return n;
-      };
-      addIds(idsFromDoc(document));
-      log("Page 1: " + ids.length + " agents.");
-
-      for (let page = 2; page <= pageCap; page++) {
-        const url = location.origin + basePath + "/pg-" + page;
-        const doc = await loadInFrame(url, (d) => idsFromDoc(d).length > 0, 15000);
-        const added = doc ? addIds(idsFromDoc(doc)) : 0;
-        log("Page " + page + ": +" + added + " (total " + ids.length + ")");
-        if (added === 0) break;
-        await sleep(600);
-      }
-
-      if (ids.length === 0) {
-        log("No agents detected. Make sure the agent list is visible on this page,");
-        log("then click Scrape again.");
-        return;
-      }
-
-      // 2) Open each profile in a hidden frame and read its contact info.
-      log("Reading contact info for " + ids.length + " agents...");
-      const rows = [];
-      for (let i = 0; i < ids.length; i++) {
-        const url = location.origin + "/realestateagents/" + ids[i];
-        const ready = (d) =>
-          d.querySelector("h1") &&
-          [...d.querySelectorAll("h1,h2,h3,h4")].some(
-            (h) => clean(h.textContent).toLowerCase() === "contact information"
-          );
-        const doc = await loadInFrame(url, ready, 12000);
-        if (doc && doc.querySelector("h1")) {
-          const row = parseProfile(doc, url);
-          rows.push(row);
-          log("[" + (i + 1) + "/" + ids.length + "] " + (row.name || "(no name)"));
-        } else {
-          log("[" + (i + 1) + "/" + ids.length + "] could not read, skipped.");
-        }
-        await sleep(500);
-      }
-
-      if (rows.length === 0) {
-        log("Could not read any profiles.");
-        return;
-      }
-      download(toCSV(rows), "realtor_agents_" + label + ".csv");
-      log("DONE. Saved " + rows.length + " agents -> realtor_agents_" + label + ".csv");
-      log("(Check your Downloads folder.)");
+      log(`ALL DONE. ${grand} agents across ${zips.length} ZIP(s). Check your Downloads folder.`);
     } catch (e) {
       log("Error: " + (e && e.message ? e.message : e));
     }

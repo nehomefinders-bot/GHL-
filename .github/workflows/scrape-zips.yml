@@ -1,0 +1,59 @@
+name: Scrape Realtor Zips
+
+# Free cloud runs on GitHub's servers - no credit card, keeps running with your
+# PC off. Two ways to start it:
+#   1) Edit cloud/zips.txt (put your zips, one per line) and commit -> auto-runs.
+#   2) Actions tab -> Run workflow (if the button shows) and paste zips.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "cloud/zips.txt"
+  workflow_dispatch:
+    inputs:
+      zips:
+        description: "Zip codes (comma, space or newline separated)"
+        required: true
+        default: "30002"
+      max_pages:
+        description: "Max pages per zip (blank = all)"
+        required: false
+        default: ""
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+
+      - name: Install dependencies
+        run: pip install selenium
+
+      - name: Run scraper
+        env:
+          ZIPS: ${{ github.event.inputs.zips }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages }}
+          OUTPUT_DIR: outputs
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+          # Optional: add a residential proxy as repo secret SCRAPER_PROXY to get
+          # past realtor.com's block from GitHub's datacenter IP.
+          SCRAPER_PROXY: ${{ secrets.SCRAPER_PROXY }}
+        run: python cloud/run_zips.py
+
+      - name: Upload CSVs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realtor-csvs
+          path: outputs/*.csv
+          if-no-files-found: warn

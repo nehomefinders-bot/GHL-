@@ -1,0 +1,14 @@
+# Put the zip codes you want to scrape below, ONE PER LINE.
+# Lines starting with # are ignored.
+# When you SAVE/COMMIT this file on GitHub, the scraper runs automatically
+# and produces a CSV per zip (download it from the Actions run's artifacts).
+#
+# Optional: set a page limit for testing by adding a line like:  pages: 2
+# (leave it out to scrape all pages)
+
+pages: 1
+
+30303
+30305
+30309
+30334

@@ -1,0 +1,18 @@
+# Render.com Blueprint - deploys the cloud scraper as a FREE Docker web service.
+# In Render: New + -> Blueprint -> connect this repo -> it reads this file.
+# (Render's free plan has no persistent disk, so CSVs live on the running
+# instance - download them after each zip finishes.)
+services:
+  - type: web
+    name: realtor-agent-scraper
+    runtime: docker
+    plan: free
+    dockerfilePath: ./cloud/Dockerfile
+    dockerContext: ./cloud
+    autoDeploy: true
+    envVars:
+      - key: OUTPUT_DIR
+        value: /app/outputs
+      # Optional: to bypass realtor.com's block from a cloud IP, set a proxy:
+      # - key: SCRAPER_PROXY
+      #   value: http://user:pass@residential-proxy-host:port
