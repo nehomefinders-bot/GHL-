@@ -1,0 +1,7 @@
+# The ui-ux-pro-max skills ship their searchable database as CSV files.
+# The repository root ignores *.csv (scraper output), so re-include the
+# skill data files here — they are required for the skills to work.
+!*.csv
+
+# Keep Python bytecode caches out of the repo.
+__pycache__/
