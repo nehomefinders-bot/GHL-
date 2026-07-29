@@ -121,7 +121,10 @@ function scrapeZips(zips, maxPages) {
       const seg = m[1];
       if (/^\d{5}$/.test(seg)) return;
       if (/^(intent-|sort-|agenttype-|pg-)/.test(seg)) return;
-      if (!(/^[0-9a-f]{24}$/.test(seg) || seg.includes("_"))) return;
+      // Agent profiles are a 24-hex id (old) or a name_city_state_<id> slug
+      // (new; always has a long numeric id). Skip realtor's "nearby city" links
+      // such as "gold-hill_or" (underscore, but no numeric id).
+      if (!(/^[0-9a-f]{24}$/.test(seg) || (seg.includes("_") && /\d{3,}/.test(seg)))) return;
       const purl = location.origin + "/realestateagents/" + seg;
       if (!seen.has(purl)) { seen.add(purl); out.push(purl); }
     });

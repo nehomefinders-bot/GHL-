@@ -196,7 +196,10 @@ def _profile_links(driver):
             continue
         if re.match(r"(intent-|sort-|agenttype-|pg-)", seg):  # search / pagination
             continue
-        if not (re.fullmatch(r"[0-9a-f]{24}", seg) or "_" in seg):  # not an agent
+        # Agent profiles are a 24-hex id (old) or a name_city_state_<id> slug
+        # (new; always has a long numeric id). Skip "nearby city" links such as
+        # "gold-hill_or" (underscore, but no numeric id).
+        if not (re.fullmatch(r"[0-9a-f]{24}", seg) or ("_" in seg and re.search(r"\d{3,}", seg))):
             continue
         url = "https://www.realtor.com/realestateagents/" + seg
         if url not in seen:
