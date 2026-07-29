@@ -91,8 +91,8 @@ function scrapeZips(zips, maxPages) {
         while (Date.now() - started < timeoutMs) {
           let doc = null;
           try { doc = frame.contentDocument; } catch (e) { break; }
-          if (doc && isReady(doc)) { await sleep(250); finish(frame.contentDocument); return; }
-          await sleep(350);
+          if (doc && isReady(doc)) { await sleep(200); finish(frame.contentDocument); return; }
+          await sleep(150);
         }
         let doc = null;
         try { doc = frame.contentDocument; } catch (e) {}
@@ -223,29 +223,43 @@ function scrapeZips(zips, maxPages) {
       for (const u of pageUrls) if (!seen.has(u)) { seen.add(u); profileUrls.push(u); added++; }
       log(`  ${zip}: page ${page} -> +${added} (total ${profileUrls.length})`);
       if (added === 0) break;
-      await sleep(500);
+      await sleep(150);
     }
 
-    const rows = [];
-    for (let i = 0; i < profileUrls.length; i++) {
-      const url = profileUrls[i];
-      const ready = (d) =>
-        d.querySelector("h1") &&
-        [...d.querySelectorAll("h1,h2,h3,h4")].some(
-          (h) => clean(h.textContent).toLowerCase() === "contact information"
-        );
-      const doc = await loadInFrame(url, ready, 12000);
-      if (doc && doc.querySelector("h1")) {
-        const row = parseProfile(doc, url);
-        row.search_zip = zip;
-        rows.push(row);
-        log(`  ${zip}: [${i + 1}/${profileUrls.length}] ${clean(doc.querySelector("h1").textContent) || "(no name)"}`);
-      } else {
-        log(`  ${zip}: [${i + 1}/${profileUrls.length}] could not read, skipped.`);
+    // Scrape profiles in parallel (a small worker pool) instead of one-by-one.
+    // Same parsing per profile, so identical data quality - just much faster.
+    // rows[] is indexed by position, so the CSV keeps the original listing order.
+    const total = profileUrls.length;
+    const rows = new Array(total);
+    const ready = (d) =>
+      d.querySelector("h1") &&
+      [...d.querySelectorAll("h1,h2,h3,h4")].some(
+        (h) => clean(h.textContent).toLowerCase() === "contact information"
+      );
+    let cursor = 0;
+    let finishedCount = 0;
+    async function profileWorker() {
+      while (true) {
+        const i = cursor++;
+        if (i >= total) return;
+        const url = profileUrls[i];
+        const doc = await loadInFrame(url, ready, 12000);
+        if (doc && doc.querySelector("h1")) {
+          const row = parseProfile(doc, url);
+          row.search_zip = zip;
+          rows[i] = row;
+          log(`  ${zip}: [${++finishedCount}/${total}] ${clean(doc.querySelector("h1").textContent) || "(no name)"}`);
+        } else {
+          log(`  ${zip}: [${++finishedCount}/${total}] could not read, skipped.`);
+        }
+        await sleep(90 + Math.random() * 160);  // small jitter, avoids a burst
       }
-      await sleep(400);
     }
-    return rows;
+    const CONCURRENCY = 5;  // ~5 profiles at once; raise for more speed if your PC is strong
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, total || 1) }, profileWorker)
+    );
+    return rows.filter(Boolean);  // drop skipped slots, keep listing order
   }
 
   (async () => {
