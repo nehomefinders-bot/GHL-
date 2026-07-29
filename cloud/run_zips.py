@@ -11,6 +11,7 @@ Traffic goes out direct, or through a residential proxy if SCRAPER_PROXY is set
 import csv
 import os
 import re
+import sys
 
 from scraper import Scraper, FIELDS, active_mode
 
@@ -78,10 +79,13 @@ def main():
     finally:
         scraper.close()
     print(f"All done. {total} agents across {len(zips)} zip(s).", flush=True)
-    if total == 0 and mode == "proxy":
-        print("0 agents with a proxy set: check that SCRAPER_PROXY is a working, "
-              "US residential proxy (datacenter proxies are blocked too).",
-              flush=True)
+    if total == 0:
+        # Make the run fail (red) when nothing came through, so the pass/fail
+        # status is a clear "did it get past realtor.com?" signal.
+        print("RESULT: 0 agents - realtor.com served no data (blocked or empty). "
+              "See the DIAG lines above for what it returned.", flush=True)
+        sys.exit(1)
+    print(f"RESULT: SUCCESS - {total} agents scraped.", flush=True)
 
 
 if __name__ == "__main__":

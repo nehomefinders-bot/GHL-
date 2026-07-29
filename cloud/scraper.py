@@ -135,7 +135,47 @@ try {
 """
 
 
+def _make_uc_driver():
+    """Technique attempt (no proxy): undetected-chromedriver patches the headless
+    Chrome fingerprints PerimeterX inspects (navigator.webdriver, CDP tells, etc.)
+    to look like an ordinary browser. Returns a driver, or None to fall back to
+    plain Selenium. Note: this improves the *browser* fingerprint only - it can't
+    change the machine's IP, which is the other half of realtor.com's defense."""
+    if os.environ.get("USE_UC", "1") == "0":
+        return None
+    try:
+        import undetected_chromedriver as uc
+    except Exception:
+        return None
+    try:
+        opts = uc.ChromeOptions()
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--window-size=1400,1000")
+        opts.add_argument("--lang=en-US")
+        if os.environ.get("LOAD_IMAGES", "0") != "1":
+            opts.add_argument("--blink-settings=imagesEnabled=false")
+        _apply_proxy(opts)
+        kwargs = {"options": opts, "headless": True}
+        chrome_bin = os.environ.get("CHROME_BIN")
+        if chrome_bin:
+            kwargs["browser_executable_path"] = chrome_bin
+        driver = uc.Chrome(**kwargs)
+        driver.set_page_load_timeout(60)
+        print("Driver: undetected-chromedriver.", flush=True)
+        return driver
+    except Exception as exc:
+        print(f"undetected-chromedriver unavailable ({exc}); using plain Selenium.",
+              flush=True)
+        return None
+
+
 def make_driver():
+    uc_driver = _make_uc_driver()
+    if uc_driver is not None:
+        return uc_driver
+    if webdriver is None:
+        raise RuntimeError("browser mode needs the 'selenium' package installed.")
     opts = Options()
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")

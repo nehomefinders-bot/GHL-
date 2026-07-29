@@ -49,7 +49,7 @@ jobs:
           chrome-version: stable
 
       - name: Install dependencies
-        run: pip install selenium
+        run: pip install selenium undetected-chromedriver
 
       - name: Run scraper
         env:
