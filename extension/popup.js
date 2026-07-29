@@ -36,7 +36,8 @@ goBtn.addEventListener("click", async () => {
   setStatus(`Started ${zips.length} ZIP(s)` +
             (maxPages ? ` (first ${maxPages} page${maxPages > 1 ? "s" : ""} each)` : " (all pages each)") +
             ".\nA black progress box shows on the page. You can close this popup -\n" +
-            "it keeps running. A CSV downloads after each ZIP finishes.");
+            "it keeps running. A CSV downloads after each ZIP, plus one combined\n" +
+            "CSV of all ZIPs at the end. Keep the tab open and your PC awake.");
   chrome.scripting.executeScript({
     target: { tabId: tab.id },
     args: [zips, maxPages],
@@ -48,7 +49,8 @@ goBtn.addEventListener("click", async () => {
 // Runs INSIDE the realtor.com page, in the user's real session. For each ZIP it
 // loads the results pages and each agent profile in hidden SAME-ORIGIN iframes
 // (so realtor.com's own JavaScript fills in the data, exactly like clicking),
-// then downloads a CSV for that ZIP before moving to the next.
+// downloads a CSV for that ZIP, then at the end downloads one combined CSV of
+// every ZIP and a summary of any ZIPs that need re-running.
 // ---------------------------------------------------------------------------
 function scrapeZips(zips, maxPages) {
   const pageCap = maxPages && maxPages > 0 ? maxPages : 120;
@@ -118,6 +120,19 @@ function scrapeZips(zips, maxPages) {
            t.includes("access to this page has been denied");
   }
 
+  // Load one results page, retrying past a transient block before giving up.
+  async function loadListingPage(url, zip, page) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const doc = await loadInFrame(url, (d) => idsFromDoc(d).length > 0 || isBlocked(d), 15000);
+      if (!(doc && isBlocked(doc))) return { doc, blocked: false };
+      if (attempt < 3) {
+        log(`  ${zip}: blocked on page ${page}, retry ${attempt}/2 in 5s...`);
+        await sleep(5000);
+      }
+    }
+    return { doc: null, blocked: true };
+  }
+
   function parseProfile(doc, url) {
     const h1 = doc.querySelector("h1");
     const name = clean(h1 && h1.textContent);
@@ -146,6 +161,7 @@ function scrapeZips(zips, maxPages) {
     const bodyText = doc.body ? doc.body.innerText : "";
     (bodyText.match(/\(\d{3}\)\s?\d{3}-\d{4}/g) || []).forEach((p) => phones.add(p));
     return {
+      search_zip: "",
       name,
       name_section: nameSection,
       contact_information: contactSection,
@@ -156,7 +172,7 @@ function scrapeZips(zips, maxPages) {
   }
 
   function toCSV(rows) {
-    const cols = ["name", "name_section", "contact_information",
+    const cols = ["search_zip", "name", "name_section", "contact_information",
                   "phones", "website_links", "profile_url"];
     const esc = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
     const out = [cols.join(",")];
@@ -180,9 +196,9 @@ function scrapeZips(zips, maxPages) {
     const seen = new Set();
     for (let page = 1; page <= pageCap; page++) {
       const url = base + "/pg-" + page;
-      const doc = await loadInFrame(url, (d) => idsFromDoc(d).length > 0 || isBlocked(d), 15000);
-      if (doc && isBlocked(doc)) {
-        log(`  ${zip}: blocked on page ${page}. Browse realtor.com in this tab, then retry.`);
+      const { doc, blocked } = await loadListingPage(url, zip, page);
+      if (blocked) {
+        log(`  ${zip}: still blocked on page ${page}. Browse realtor.com in this tab, then re-run this ZIP.`);
         break;
       }
       const pageIds = doc ? idsFromDoc(doc) : [];
@@ -203,7 +219,9 @@ function scrapeZips(zips, maxPages) {
         );
       const doc = await loadInFrame(url, ready, 12000);
       if (doc && doc.querySelector("h1")) {
-        rows.push(parseProfile(doc, url));
+        const row = parseProfile(doc, url);
+        row.search_zip = zip;
+        rows.push(row);
         log(`  ${zip}: [${i + 1}/${ids.length}] ${clean(doc.querySelector("h1").textContent) || "(no name)"}`);
       } else {
         log(`  ${zip}: [${i + 1}/${ids.length}] could not read, skipped.`);
@@ -217,17 +235,30 @@ function scrapeZips(zips, maxPages) {
     try {
       log(`Scraping ${zips.length} ZIP(s): ${zips.join(", ")}`);
       log(maxPages && maxPages > 0 ? `Limit: first ${maxPages} page(s) each.` : "Limit: all pages each.");
-      let grand = 0;
+      const allRows = [];
+      const zeroZips = [];
       for (let z = 0; z < zips.length; z++) {
         const zip = zips[z];
         log(`=== ZIP ${zip} (${z + 1}/${zips.length}) ===`);
         const rows = await scrapeOneZip(zip);
         download(toCSV(rows), "realtor_agents_" + zip + ".csv");
-        grand += rows.length;
+        allRows.push(...rows);
+        if (rows.length === 0) zeroZips.push(zip);
         log(`=== ZIP ${zip}: saved ${rows.length} agents -> realtor_agents_${zip}.csv ===`);
         await sleep(800);
       }
-      log(`ALL DONE. ${grand} agents across ${zips.length} ZIP(s). Check your Downloads folder.`);
+
+      // One combined file across every ZIP (has a search_zip column).
+      if (allRows.length > 0) {
+        download(toCSV(allRows), "realtor_agents_ALL_" + zips.length + "zips.csv");
+        log(`Combined -> realtor_agents_ALL_${zips.length}zips.csv (${allRows.length} rows).`);
+      }
+
+      log(`ALL DONE. ${allRows.length} agents across ${zips.length} ZIP(s). Check your Downloads folder.`);
+      if (zeroZips.length > 0) {
+        log(`NOTE: ${zeroZips.length} ZIP(s) returned 0 agents (likely a block). Re-run just these:`);
+        log("  " + zeroZips.join(", "));
+      }
     } catch (e) {
       log("Error: " + (e && e.message ? e.message : e));
     }

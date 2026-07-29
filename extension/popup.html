@@ -23,7 +23,8 @@
 </head>
 <body>
   <h1>Realtor.com Agent Scraper by JAWAD AHMAD</h1>
-  <p class="sub">Paste a list of ZIPs &mdash; it scrapes each one and saves a CSV per ZIP.</p>
+  <p class="sub">Paste a big list of ZIPs &mdash; it scrapes each one, saves a CSV per ZIP,
+  and a combined CSV of all ZIPs at the end.</p>
 
   <div class="field">
     <label for="zips">ZIP codes (one per line)</label>
@@ -42,8 +43,10 @@
 
   <ol>
     <li>Open <b>realtor.com</b> and browse once (clear any bot check).</li>
-    <li>Paste your ZIPs above, click <b>Scrape all ZIPs</b>.</li>
-    <li>Keep the tab open; you can close this popup. A CSV downloads per ZIP.</li>
+    <li>Paste your ZIPs above (dozens is fine), click <b>Scrape all ZIPs</b>.</li>
+    <li>Keep the tab open and your PC awake; you can close this popup and use
+        other apps. A CSV downloads per ZIP, plus one combined CSV at the end.</li>
+    <li>If any ZIP shows 0 agents, the box lists them so you can re-run just those.</li>
   </ol>
 
   <script src="popup.js"></script>

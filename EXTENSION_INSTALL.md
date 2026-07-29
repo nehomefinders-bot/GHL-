@@ -20,25 +20,32 @@ warnings either, because there's no `.exe`.
 6. The "Realtor.com Agent Scraper" icon appears in your toolbar. (Click the
    puzzle-piece icon and pin it so it's always visible.)
 
-## Use
+## Use (bulk — paste a list of ZIPs and walk away)
 
-1. Go to **https://www.realtor.com** → **Find an Agent**. If a "press & hold" or
-   other check appears, complete it once (you're a human, so this just works).
-2. **Search your ZIP and choose "Both"** so the list of agents is showing on the
-   page.
-3. Click the **Realtor.com Agent Scraper** toolbar icon. Optionally type a
-   **number of pages** (e.g. `5`) to test just the first few pages — leave it
-   **blank to scrape every page**. Then click **Scrape agents on this search**.
-4. A black progress box appears on the page. It reads the agent list, walks
-   every results page, and opens each agent (in the background) to grab the name
-   section and full **Contact information**. You can close the little popup — it
-   keeps running.
-5. When it finishes it **auto-downloads** `realtor_agents_<location>.csv` to your
-   Downloads folder. Open it in Excel.
+1. Open **https://www.realtor.com** in a tab and browse for a moment so it loads
+   normally. If a "press & hold" or other check appears, complete it once
+   (you're a human, so this just works). Stay on a realtor.com tab.
+2. Click the **Realtor.com Agent Scraper** toolbar icon.
+3. **Paste your ZIP codes, one per line** — you can paste dozens at once.
+   Optionally set **Max pages per ZIP** (e.g. `5`) to test; leave it **blank to
+   scrape every page** of every ZIP.
+4. Click **Scrape all ZIPs**. A black progress box appears on the page. It walks
+   every results page for each ZIP and opens each agent (in hidden background
+   frames) to grab the name section and full **Contact information**. You can
+   close the little popup — it keeps running.
+5. **Keep the tab open and your PC awake** (you can minimise Chrome and use other
+   apps). It **auto-downloads** to your Downloads folder:
+   - `realtor_agents_<zip>.csv` after each ZIP finishes, and
+   - one combined `realtor_agents_ALL_<n>zips.csv` at the end (every ZIP in one
+     file, with a `search_zip` column). Open in Excel.
+6. If any ZIP shows **0 agents** (an occasional block), the progress box lists
+   exactly which ZIPs — just re-run those few.
 
 > It works by reading the pages the way your browser renders them and loading
 > further pages in hidden background frames within your own session — so
-> realtor.com serves it just like normal clicking, and never blocks it.
+> realtor.com serves it just like normal clicking, and never blocks it. Because
+> it runs in your real Chrome (your own IP, no automation fingerprint), it beats
+> the bot protection that stops the cloud/exe versions.
 
 ## Notes
 
