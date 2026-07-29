@@ -13,6 +13,13 @@ services:
     envVars:
       - key: OUTPUT_DIR
         value: /app/outputs
-      # Optional: to bypass realtor.com's block from a cloud IP, set a proxy:
+      # To get past realtor.com's block from a cloud IP, set ONE provider (see
+      # cloud/README.md). Add these in Render's dashboard as secrets, not here.
+      # Easiest - a scraping API key:
+      # - key: SCRAPER_API_KEY
+      #   sync: false            # set the value in the Render dashboard
+      # - key: SCRAPER_API_PROVIDER
+      #   value: scraperapi      # or scrapingbee
+      # Or a residential proxy:
       # - key: SCRAPER_PROXY
-      #   value: http://user:pass@residential-proxy-host:port
+      #   sync: false            # http://user:pass@residential-proxy-host:port

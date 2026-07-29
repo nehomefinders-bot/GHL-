@@ -14,7 +14,7 @@ from datetime import datetime
 
 from flask import Flask, request, redirect, url_for, send_from_directory, Response
 
-from scraper import make_driver, scrape_zip, FIELDS
+from scraper import Scraper, FIELDS, active_mode
 
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(os.path.dirname(__file__), "outputs"))
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -53,10 +53,9 @@ def write_csv(zip_code, rows):
 
 
 def worker(zips, max_pages):
-    driver = None
+    scraper = None
     try:
-        log("Launching headless Chrome...")
-        driver = make_driver()
+        scraper = Scraper(log)
         for zip_code in zips:
             if JOB["stop"]:
                 log("Stopped by user.")
@@ -64,8 +63,8 @@ def worker(zips, max_pages):
             JOB["current"] = zip_code
             log(f"=== Zip {zip_code} ===")
             try:
-                rows = scrape_zip(driver, zip_code, log, max_pages=max_pages,
-                                  stop=lambda: JOB["stop"])
+                rows = scraper.scrape_zip(zip_code, max_pages=max_pages,
+                                          stop=lambda: JOB["stop"])
             except Exception as exc:  # blocked or error - record and continue
                 log(f"  zip {zip_code}: FAILED ({exc}).")
                 rows = []
@@ -75,11 +74,8 @@ def worker(zips, max_pages):
     except Exception as exc:
         log(f"Fatal error: {exc}")
     finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+        if scraper is not None:
+            scraper.close()
         JOB["current"] = None
         JOB["running"] = False
         JOB["finished"] = datetime.now().strftime("%H:%M:%S")
@@ -127,8 +123,10 @@ table{{border-collapse:collapse;width:100%;margin-top:10px}} td,th{{border:1px s
 <table><tr><th>Zip</th><th>Agents</th><th>CSV</th></tr>{rows_html or "<tr><td colspan=3>none yet</td></tr>"}</table>
 <h3>Live log</h3><div class=log>{log_html}</div>
 <p class=note>The job runs on the server &mdash; you can close this page or your PC and it keeps going.
-If every zip returns 0 agents, realtor.com is blocking this server's IP; set a residential proxy in the
-<code>SCRAPER_PROXY</code> environment variable to get through.</p>
+Backend mode: <b>{active_mode()}</b>.
+If every zip returns 0 agents, realtor.com is blocking this server's IP. To get through, set
+<b>one</b> of these environment variables: a scraping-API key <code>SCRAPER_API_KEY</code>
+(easiest), or a residential proxy <code>SCRAPER_PROXY</code>. See cloud/README.md for the exact setup.</p>
 </body></html>"""
 
 
