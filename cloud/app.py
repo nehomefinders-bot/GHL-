@@ -123,10 +123,10 @@ table{{border-collapse:collapse;width:100%;margin-top:10px}} td,th{{border:1px s
 <table><tr><th>Zip</th><th>Agents</th><th>CSV</th></tr>{rows_html or "<tr><td colspan=3>none yet</td></tr>"}</table>
 <h3>Live log</h3><div class=log>{log_html}</div>
 <p class=note>The job runs on the server &mdash; you can close this page or your PC and it keeps going.
-Backend mode: <b>{active_mode()}</b>.
-If every zip returns 0 agents, realtor.com is blocking this server's IP. To get through, set
-<b>one</b> of these environment variables: a scraping-API key <code>SCRAPER_API_KEY</code>
-(easiest), or a residential proxy <code>SCRAPER_PROXY</code>. See cloud/README.md for the exact setup.</p>
+Backend: headless browser (<b>{active_mode()}</b>) &mdash; the scraping logic is entirely ours.
+If every zip returns 0 agents, this server's IP is blocked by realtor.com. Run this on a
+<b>residential IP</b> (your own PC or a home server) for free, or route it through a residential
+proxy by setting <code>SCRAPER_PROXY</code>. See cloud/README.md.</p>
 </body></html>"""
 
 

@@ -1,29 +1,26 @@
-"""realtor.com agent scraper backends (cloud / automated).
+"""realtor.com agent scraper - your own headless-browser logic.
 
-realtor.com is protected by PerimeterX / HUMAN, which blocks datacenter / cloud
-IPs aggressively. To get data from a cloud host (GitHub Actions, Render, a VPS)
-you must make the traffic look like it comes from a real home connection. This
-module supports three modes, chosen automatically from environment variables:
+All scraping is done by THIS code. A real (headless) Chromium loads the
+find-an-agent results pages and each agent profile; the page's own JavaScript
+renders the data, and we read it straight from the DOM. No third-party scraping
+service is involved - the logic is entirely ours.
 
-  * "api"    - SCRAPER_API_KEY is set: fetch fully-rendered HTML through a
-               scraping API (ScraperAPI / ScrapingBee / a custom template). The
-               API supplies the residential IP, solves the bot check, and runs
-               the page's JavaScript. No local browser is needed.
-  * "proxy"  - SCRAPER_PROXY is set: drive a real (headless) Chromium through a
-               (residential) proxy, so the site's JavaScript runs locally.
-  * "direct" - nothing is set: plain headless Chromium with no proxy. Works from
-               a residential IP (e.g. your own PC) but is blocked from cloud IPs.
+realtor.com (PerimeterX / HUMAN) blocks datacenter / cloud IPs, so the only thing
+that really matters is WHERE you run this:
+
+  * From a residential IP (your own PC, a home server, an always-on mini-PC) it
+    works with no extra setup - the free, fully self-contained way.
+  * From a cloud / datacenter host, realtor.com blocks the IP. Route the browser
+    through a RESIDENTIAL PROXY - which is just an IP tunnel, it does no scraping
+    of its own - by setting SCRAPER_PROXY. Our code still does 100% of the work.
+
+Modes (auto-selected from the environment):
+  * "proxy"  - SCRAPER_PROXY is set: the browser goes out through your proxy.
+  * "direct" - nothing set: plain headless Chromium (works from a home IP).
 
 Environment variables
-----------------------
-  SCRAPER_API_KEY       API key -> selects "api" mode.
-  SCRAPER_API_PROVIDER  scraperapi (default) | scrapingbee | custom
-  SCRAPER_API_TEMPLATE  for provider=custom: a URL template containing {key} and
-                        {url} (the target url is percent-encoded), e.g.
-                        https://api.example.com/?key={key}&url={url}&render=true
-  SCRAPER_API_COUNTRY   geo for the API's exit IP (default "us")
-  SCRAPER_API_RENDER    "1"/"0" - run JavaScript on the API side (default "1")
-  SCRAPER_PROXY         http[s]://[user:pass@]host:port  -> selects "proxy" mode
+---------------------
+  SCRAPER_PROXY   http[s]://[user:pass@]host:port   (optional residential proxy)
 """
 
 import json
@@ -32,38 +29,15 @@ import re
 import tempfile
 import time
 import random
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse
 
-# Optional deps: only needed for "api" mode. Import lazily-tolerantly so the
-# browser modes still work in a minimal environment.
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None
-try:
-    from bs4 import BeautifulSoup
-except ImportError:  # pragma: no cover
-    BeautifulSoup = None
-
-# Selenium is only needed for the browser modes (proxy / direct). Import it
-# tolerantly so "api" mode runs with just requests + beautifulsoup4 installed.
-try:
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from selenium.common.exceptions import TimeoutException, WebDriverException
-except ImportError:  # pragma: no cover
-    webdriver = Options = Service = None
-
-    class TimeoutException(Exception):
-        pass
-
-    class WebDriverException(Exception):
-        pass
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
 BASE_URL = "https://www.realtor.com/realestateagents"
 PROFILE_RE = re.compile(r"/realestateagents/([0-9a-f]{24})\b")
-PHONE_RE = re.compile(r"\(\d{3}\)\s?\d{3}-\d{4}")
 FIELDS = ["name", "name_section", "contact_information",
           "phones", "website_links", "profile_url"]
 BLOCK_MARKERS = ("your request could not be processed",
@@ -74,204 +48,17 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 def active_mode():
-    """Which backend the current environment selects."""
-    if os.environ.get("SCRAPER_API_KEY"):
-        return "api"
-    if os.environ.get("SCRAPER_PROXY"):
-        return "proxy"
-    return "direct"
+    """Which way traffic goes out: through a residential proxy, or direct."""
+    return "proxy" if os.environ.get("SCRAPER_PROXY") else "direct"
 
 
 def _pause(lo=1.0, hi=2.5):
     time.sleep(random.uniform(lo, hi))
 
 
-def _clean(text):
-    return re.sub(r"\s+", " ", text or "").strip()
-
-
-def _is_blocked_html(html):
-    low = (html or "").lower()
-    return any(m in low for m in BLOCK_MARKERS)
-
-
 # ---------------------------------------------------------------------------
-# Parsing (shared): works on a raw HTML string, so the same logic serves both
-# the API mode and any future html-only path.
-# ---------------------------------------------------------------------------
-def _ids_from_html(html):
-    out, seen = [], set()
-    for m in PROFILE_RE.finditer(html or ""):
-        if m.group(1) not in seen:
-            seen.add(m.group(1))
-            out.append(m.group(1))
-    return out
-
-
-def _closest(tag, names):
-    """Nearest self-or-ancestor element whose tag name is in `names`."""
-    while tag is not None:
-        if getattr(tag, "name", None) in names:
-            return tag
-        tag = tag.parent
-    return None
-
-
-def _parse_profile_html(html, url):
-    """Extract one agent row from a profile page's HTML (mirrors the browser
-    extraction: name header block + Contact information section)."""
-    if not html or BeautifulSoup is None:
-        return None
-    soup = BeautifulSoup(html, "html.parser")
-    h1 = soup.find("h1")
-    name = _clean(h1.get_text(" ") if h1 else "")
-    if not name:
-        return None
-
-    name_section = ""
-    if h1:
-        block = _closest(h1, {"section", "header", "div"}) or h1
-        name_section = _clean(block.get_text(" "))
-
-    contact_section = ""
-    phones, links = [], []
-    heading = None
-    for h in soup.find_all(["h1", "h2", "h3", "h4"]):
-        if _clean(h.get_text(" ")).lower() == "contact information":
-            heading = h
-            break
-    if heading is not None:
-        section = _closest(heading, {"section"}) or heading.parent
-        if section is not None:
-            contact_section = _clean(section.get_text(" "))
-            for a in section.find_all("a", href=True):
-                href = a["href"].strip()
-                if href.startswith("tel:"):
-                    p = href[4:].strip()
-                    if p and p not in phones:
-                        phones.append(p)
-                elif re.match(r"^https?:", href) and "realtor.com" not in href:
-                    if href not in links:
-                        links.append(href)
-
-    body_text = soup.get_text(" ")
-    for p in PHONE_RE.findall(body_text):
-        if p not in phones:
-            phones.append(p)
-
-    return {
-        "name": name,
-        "name_section": name_section,
-        "contact_information": contact_section,
-        "phones": "; ".join(phones),
-        "website_links": "; ".join(links),
-        "profile_url": url,
-    }
-
-
-# ---------------------------------------------------------------------------
-# API mode: fetch rendered HTML through a scraping API.
-# ---------------------------------------------------------------------------
-def _api_request_url(target_url):
-    provider = (os.environ.get("SCRAPER_API_PROVIDER") or "scraperapi").lower()
-    key = os.environ.get("SCRAPER_API_KEY", "")
-    country = os.environ.get("SCRAPER_API_COUNTRY", "us").strip()
-    render = os.environ.get("SCRAPER_API_RENDER", "1").strip() != "0"
-    enc = quote(target_url, safe="")
-
-    if provider == "scrapingbee":
-        parts = [f"https://app.scrapingbee.com/api/v1/?api_key={key}",
-                 f"url={enc}", f"render_js={'true' if render else 'false'}"]
-        if country:
-            parts.append(f"country_code={country}")
-        return "&".join(parts)
-
-    if provider == "custom":
-        tmpl = os.environ.get("SCRAPER_API_TEMPLATE", "")
-        if not tmpl:
-            raise RuntimeError(
-                "SCRAPER_API_PROVIDER=custom needs SCRAPER_API_TEMPLATE with "
-                "{key} and {url} placeholders.")
-        return tmpl.format(key=key, url=enc)
-
-    # default: scraperapi
-    parts = [f"https://api.scraperapi.com/?api_key={key}", f"url={enc}",
-             f"render={'true' if render else 'false'}"]
-    if country:
-        parts.append(f"country_code={country}")
-    return "&".join(parts)
-
-
-def _api_get(session, target_url, log, attempts=3):
-    """Fetch target_url's rendered HTML via the configured API, with retries."""
-    if requests is None:
-        raise RuntimeError("api mode needs the 'requests' package installed.")
-    api_url = _api_request_url(target_url)
-    last = ""
-    for i in range(1, attempts + 1):
-        try:
-            resp = session.get(api_url, timeout=(15, 130))
-        except requests.RequestException as exc:
-            last = f"network error: {exc}"
-        else:
-            if resp.status_code == 200 and resp.text and not _is_blocked_html(resp.text):
-                return resp.text
-            if resp.status_code in (401, 403):
-                log(f"    API returned {resp.status_code} - check your API key / credits.")
-                return None
-            if resp.status_code == 200 and _is_blocked_html(resp.text):
-                last = "target still blocked (try render on / a different country)"
-            else:
-                last = f"HTTP {resp.status_code}"
-        if i < attempts:
-            back = 5 * i
-            log(f"    API fetch retry {i}/{attempts} ({last}); waiting {back}s")
-            time.sleep(back)
-    log(f"    API fetch failed after {attempts} tries ({last}).")
-    return None
-
-
-def scrape_zip_api(session, zip_code, log, max_pages=0, stop=lambda: False):
-    cap = max_pages if max_pages and max_pages > 0 else 200
-    ids, seen = [], set()
-    for page in range(1, cap + 1):
-        if stop():
-            break
-        url = f"{BASE_URL}/{zip_code}/intent-buy-sell/pg-{page}"
-        html = _api_get(session, url, log)
-        if html is None:
-            if page == 1:
-                raise RuntimeError("blocked")
-            break
-        added = 0
-        for aid in _ids_from_html(html):
-            if aid not in seen:
-                seen.add(aid)
-                ids.append(aid)
-                added += 1
-        log(f"  zip {zip_code}: page {page} -> +{added} (total {len(ids)})")
-        if added == 0:
-            break
-        _pause()
-
-    rows = []
-    for i, aid in enumerate(ids, 1):
-        if stop():
-            break
-        url = f"{BASE_URL}/{aid}"
-        html = _api_get(session, url, log)
-        row = _parse_profile_html(html, url) if html else None
-        if row:
-            rows.append(row)
-            log(f"  zip {zip_code}: [{i}/{len(ids)}] {row['name']}")
-        else:
-            log(f"  zip {zip_code}: [{i}/{len(ids)}] could not read, skipped.")
-        _pause(0.3, 1.0)
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# Browser mode (proxy / direct): drive a real headless Chromium.
+# Optional residential proxy: just an IP route for our browser. It performs no
+# scraping - our own code below still loads pages and reads the data.
 # ---------------------------------------------------------------------------
 def _build_proxy_auth_extension(scheme, host, port, user, password):
     """A tiny unpacked extension that points Chrome at an authenticated proxy
@@ -321,9 +108,9 @@ def _apply_proxy(opts):
         opts.add_argument(f"--proxy-server={scheme}://{host}:{port}")
 
 
-# Injected before any page script runs, to hide common headless / automation
-# fingerprints that PerimeterX looks at. Not a silver bullet (IP reputation
-# still dominates), but it removes the easy tells.
+# Injected before any page script runs, to hide the common headless / automation
+# tells that PerimeterX inspects. Not a silver bullet (IP reputation dominates),
+# but it removes the easy giveaways so our own browser looks like a normal one.
 _STEALTH_JS = """
 try {
   Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -349,8 +136,6 @@ try {
 
 
 def make_driver():
-    if webdriver is None:
-        raise RuntimeError("browser mode needs the 'selenium' package installed.")
     opts = Options()
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
@@ -514,32 +299,17 @@ def scrape_zip_browser(driver, zip_code, log, max_pages=0, stop=lambda: False):
 
 
 # ---------------------------------------------------------------------------
-# Unified entry point: picks the backend from the environment and hides the
-# driver / session lifecycle from callers.
+# Unified entry point: hides the driver lifecycle from callers.
 # ---------------------------------------------------------------------------
 class Scraper:
     def __init__(self, log=print):
         self.log = log
         self.mode = active_mode()
-        self.driver = None
-        self.session = None
-        if self.mode == "api":
-            if requests is None:
-                raise RuntimeError("api mode needs the 'requests' package installed.")
-            if BeautifulSoup is None:
-                raise RuntimeError("api mode needs 'beautifulsoup4' installed.")
-            provider = os.environ.get("SCRAPER_API_PROVIDER", "scraperapi")
-            self.session = requests.Session()
-            self.session.headers.update({"User-Agent": USER_AGENT})
-            log(f"Mode: scraping API ({provider}).")
-        else:
-            where = "residential proxy" if self.mode == "proxy" else "direct (no proxy)"
-            log(f"Mode: headless browser via {where}. Launching Chrome...")
-            self.driver = make_driver()
+        where = "residential proxy" if self.mode == "proxy" else "direct (this machine's IP)"
+        log(f"Backend: headless browser via {where}. Launching Chrome...")
+        self.driver = make_driver()
 
     def scrape_zip(self, zip_code, max_pages=0, stop=lambda: False):
-        if self.mode == "api":
-            return scrape_zip_api(self.session, zip_code, self.log, max_pages, stop)
         return scrape_zip_browser(self.driver, zip_code, self.log, max_pages, stop)
 
     def close(self):
@@ -549,12 +319,6 @@ class Scraper:
             except Exception:
                 pass
             self.driver = None
-        if self.session is not None:
-            try:
-                self.session.close()
-            except Exception:
-                pass
-            self.session = None
 
 
 # Backwards-compatible shim: older callers imported scrape_zip(driver, ...).

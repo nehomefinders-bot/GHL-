@@ -1,16 +1,16 @@
 name: Scrape Realtor Zips
 
-# Free cloud runs on GitHub's servers - no credit card, keeps running with your
-# PC off. Ways to start it:
-#   1) Edit cloud/zips.txt (put your zips, one per line) and commit -> auto-runs.
+# Runs OUR headless-browser scraper on GitHub's servers. Ways to start it:
+#   1) Edit cloud/zips.txt (your zips, one per line) and commit -> auto-runs.
 #   2) Actions tab -> Run workflow (if the button shows) and paste zips.
 #   3) On a schedule (see the "schedule" block below - disabled by default).
 #
-# IMPORTANT: realtor.com blocks GitHub's datacenter IPs. To actually get data,
-# add ONE repo secret (Settings -> Secrets and variables -> Actions):
-#   - SCRAPER_API_KEY  (a scraping-API key: ScraperAPI / ScrapingBee) - easiest
-#   - or SCRAPER_PROXY (a residential proxy: http://user:pass@host:port)
-# Without one, every zip returns 0 agents. See cloud/README.md.
+# IMPORTANT: GitHub's runners use datacenter IPs, which realtor.com blocks, so a
+# run here returns 0 agents UNLESS you route it through a residential proxy:
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#   Name: SCRAPER_PROXY   Value: http://user:pass@host:port   (US residential)
+# Prefer no paid proxy? Run cloud/run_zips.py on your own PC / a home server
+# instead - from a residential IP it works with no proxy. See cloud/README.md.
 on:
   push:
     branches: ["**"]
@@ -27,8 +27,8 @@ on:
         required: false
         default: ""
   # Uncomment to run automatically on a schedule (uses cloud/zips.txt). Only
-  # worth enabling once you've set a provider secret, or it just writes empty
-  # CSVs. Example below runs every Monday at 13:00 UTC (~9am US Eastern).
+  # worth enabling once you've set SCRAPER_PROXY, or it just writes empty CSVs.
+  # Example: every Monday at 13:00 UTC (~9am US Eastern).
   # schedule:
   #   - cron: "0 13 * * 1"
 
@@ -49,7 +49,7 @@ jobs:
           chrome-version: stable
 
       - name: Install dependencies
-        run: pip install selenium requests beautifulsoup4
+        run: pip install selenium
 
       - name: Run scraper
         env:
@@ -57,12 +57,8 @@ jobs:
           MAX_PAGES: ${{ github.event.inputs.max_pages }}
           OUTPUT_DIR: outputs
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-          # ---- Unblock realtor.com (set ONE of these as a repo secret) ----
-          # Scraping API (easiest): key + which provider it belongs to.
-          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
-          SCRAPER_API_PROVIDER: ${{ secrets.SCRAPER_API_PROVIDER }}   # scraperapi (default) | scrapingbee | custom
-          SCRAPER_API_COUNTRY: ${{ secrets.SCRAPER_API_COUNTRY }}     # e.g. us
-          # Residential proxy alternative:
+          # Residential proxy (just an IP route; our code still does the scraping).
+          # Needed to get data from GitHub's datacenter IP. Set as a repo secret.
           SCRAPER_PROXY: ${{ secrets.SCRAPER_PROXY }}
         run: python cloud/run_zips.py
 

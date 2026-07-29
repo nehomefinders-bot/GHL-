@@ -1,10 +1,11 @@
-"""Batch runner for GitHub Actions (or any CI / server).
+"""Batch runner for a server / scheduler (GitHub Actions, a home machine, cron).
 
 Reads a list of zip codes from the ZIPS env var (or cloud/zips.txt), scrapes
-realtor.com agents for each one, and writes one CSV per zip into OUTPUT_DIR.
+realtor.com agents for each one with our own headless browser, and writes one
+CSV per zip into OUTPUT_DIR.
 
-The backend (scraping API, residential proxy, or a plain headless browser) is
-chosen automatically from the environment - see scraper.py for the env vars.
+Traffic goes out direct, or through a residential proxy if SCRAPER_PROXY is set
+- see scraper.py. The scraping logic is entirely ours either way.
 """
 
 import csv
@@ -48,11 +49,13 @@ def main():
 
     mode = active_mode()
     print(f"Scraping {len(zips)} zip(s): {', '.join(zips)}", flush=True)
-    print(f"Backend mode: {mode}", flush=True)
+    print(f"Backend: headless browser ({mode})", flush=True)
     if mode == "direct":
-        print("NOTE: no SCRAPER_API_KEY or SCRAPER_PROXY set. From a cloud IP "
-              "realtor.com will block this and every zip returns 0 agents. Add a "
-              "provider secret to get data - see cloud/README.md.", flush=True)
+        print("NOTE: running 'direct' (no proxy). This works from a residential "
+              "IP - your own PC or a home server. From a cloud/datacenter IP "
+              "(e.g. GitHub's servers) realtor.com blocks it and every zip "
+              "returns 0 agents; either run this on a home connection or set a "
+              "residential proxy in SCRAPER_PROXY. See cloud/README.md.", flush=True)
 
     log = lambda m: print(m, flush=True)
     total = 0
@@ -75,9 +78,10 @@ def main():
     finally:
         scraper.close()
     print(f"All done. {total} agents across {len(zips)} zip(s).", flush=True)
-    if total == 0 and mode != "direct":
-        print("0 agents with a provider set: check the API key/credits or proxy, "
-              "and that SCRAPER_API_COUNTRY is 'us'.", flush=True)
+    if total == 0 and mode == "proxy":
+        print("0 agents with a proxy set: check that SCRAPER_PROXY is a working, "
+              "US residential proxy (datacenter proxies are blocked too).",
+              flush=True)
 
 
 if __name__ == "__main__":
