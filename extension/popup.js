@@ -134,7 +134,9 @@ function scrapeZips(zips, maxPages) {
   function isBlocked(doc) {
     const t = (doc && doc.body ? doc.body.innerText : "").toLowerCase();
     return t.includes("your request could not be processed") ||
-           t.includes("access to this page has been denied");
+           t.includes("access to this page has been denied") ||
+           t.includes("this is taking longer than usual") ||   // realtor rate-limit page
+           t.includes("unblockrequest@realtor.com");
   }
 
   // Load one results page, retrying past a transient block before giving up.
@@ -226,40 +228,75 @@ function scrapeZips(zips, maxPages) {
       await sleep(150);
     }
 
-    // Scrape profiles in parallel (a small worker pool) instead of one-by-one.
-    // Same parsing per profile, so identical data quality - just much faster.
-    // rows[] is indexed by position, so the CSV keeps the original listing order.
+    // Scrape profiles as fast as realtor.com allows WITHOUT losing quality.
+    // Several load in parallel, but the pool AUTO-throttles the instant realtor
+    // rate-limits (its "This is taking longer than usual" page). A throttled
+    // page is NEVER saved as a row - it's retried after a cooldown, so no agent
+    // is lost. Concurrency ramps up when smooth and eases off when throttled, so
+    // it rides at the fastest rate realtor tolerates. rows[] is indexed by
+    // position, so the CSV keeps the original listing order.
     const total = profileUrls.length;
     const rows = new Array(total);
-    const ready = (d) =>
+    const isReady = (d) =>
       d.querySelector("h1") &&
       [...d.querySelectorAll("h1,h2,h3,h4")].some(
         (h) => clean(h.textContent).toLowerCase() === "contact information"
       );
-    let cursor = 0;
-    let finishedCount = 0;
-    async function profileWorker() {
-      while (true) {
-        const i = cursor++;
-        if (i >= total) return;
+    // Resolve the frame as soon as the profile is ready OR a block appears, so a
+    // throttled page is caught instantly instead of waiting the full timeout.
+    const readyOrBlocked = (d) => isReady(d) || isBlocked(d);
+
+    let next = 0, finished = 0, inFlight = 0;
+    let target = 4;                       // live concurrency (auto-adjusts 1..8)
+    const MAX_T = 8, MIN_T = 1;
+    let streak = 0;                       // consecutive clean loads
+    let cooldownUntil = 0;                // global pause while throttled
+    let throttleNoteAt = 0;               // rate-limit the "throttling" log line
+
+    await new Promise((resolve) => {
+      const pump = () => {
+        while (inFlight < target && next < total) { inFlight++; run(next++); }
+        if (finished >= total) resolve();
+      };
+      const run = async (i) => {
         const url = profileUrls[i];
-        const doc = await loadInFrame(url, ready, 12000);
-        if (doc && doc.querySelector("h1")) {
-          const row = parseProfile(doc, url);
-          row.search_zip = zip;
-          rows[i] = row;
-          log(`  ${zip}: [${++finishedCount}/${total}] ${clean(doc.querySelector("h1").textContent) || "(no name)"}`);
-        } else {
-          log(`  ${zip}: [${++finishedCount}/${total}] could not read, skipped.`);
-        }
-        await sleep(90 + Math.random() * 160);  // small jitter, avoids a burst
-      }
-    }
-    const CONCURRENCY = 5;  // ~5 profiles at once; raise for more speed if your PC is strong
-    await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, total || 1) }, profileWorker)
-    );
-    return rows.filter(Boolean);  // drop skipped slots, keep listing order
+        let row = null;
+        try {
+          for (let attempt = 1; attempt <= 6; attempt++) {
+            const wait = cooldownUntil - Date.now();
+            if (wait > 0) await sleep(wait);
+            const doc = await loadInFrame(url, readyOrBlocked, 12000);
+            if (doc && isBlocked(doc)) {                    // realtor is throttling
+              streak = 0;
+              target = Math.max(MIN_T, target - 1);         // ease the whole pool
+              cooldownUntil = Math.max(cooldownUntil, Date.now() + Math.min(20000, 3000 * attempt));
+              if (Date.now() > throttleNoteAt) {
+                log(`  ${zip}: realtor is throttling - easing off & retrying (no data lost)`);
+                throttleNoteAt = Date.now() + 4000;
+              }
+              await sleep(400 + Math.random() * 600);
+              continue;                                     // retry this same agent
+            }
+            if (doc && doc.querySelector("h1")) {           // got the profile
+              row = parseProfile(doc, url);
+              row.search_zip = zip;
+              streak++;
+              if (streak >= 6 && target < MAX_T) { target++; streak = 0; }  // speed back up
+              break;
+            }
+            await sleep(500);                               // not ready yet; brief retry
+          }
+        } catch (e) { /* leave row null; never let one bad profile stall the pool */ }
+        rows[i] = row;
+        finished++;
+        inFlight--;
+        log(`  ${zip}: [${finished}/${total}] ${row ? (row.name || "(no name)") : "unreadable after retries, skipped"}`);
+        await sleep(60 + Math.random() * 100);
+        pump();
+      };
+      pump();
+    });
+    return rows.filter(Boolean);          // drop failed slots, keep listing order
   }
 
   (async () => {
