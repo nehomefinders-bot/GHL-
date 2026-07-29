@@ -145,6 +145,11 @@ def make_driver():
     opts.add_argument("--lang=en-US")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument(f"--user-agent={USER_AGENT}")
+    # Skip images/media by default: agent names + contact info are text, so not
+    # downloading photos slashes proxy bandwidth (= cost) and speeds runs up.
+    # Set LOAD_IMAGES=1 to fetch images too.
+    if os.environ.get("LOAD_IMAGES", "0") != "1":
+        opts.add_argument("--blink-settings=imagesEnabled=false")
     try:
         opts.add_experimental_option("excludeSwitches", ["enable-automation"])
         opts.add_experimental_option("useAutomationExtension", False)

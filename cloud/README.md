@@ -92,6 +92,11 @@ proxy** (this is just an IP route; our code still does every bit of the scraping
    - **Name:** `SCRAPER_PROXY`  **Value:** `http://USERNAME:PASSWORD@HOST:PORT`
 4. Run it again — CSVs will now contain agents.
 
+> 💡 **Keeping proxy cost down.** Residential proxies bill by data used, so the
+> scraper **skips images by default** (agent names + phone numbers are text) —
+> that cuts most of the bandwidth. A typical ZIP costs only cents. Set
+> `LOAD_IMAGES=1` if you ever want photos fetched too.
+
 ### Run it automatically on a schedule
 
 Open `.github/workflows/scrape-zips.yml`, find the `schedule:` block near the top,
