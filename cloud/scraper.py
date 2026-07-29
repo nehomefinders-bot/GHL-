@@ -186,13 +186,22 @@ def _profile_links(driver):
     hrefs = driver.execute_script(
         "return Array.from(document.querySelectorAll('a[href]')).map(a=>a.href);"
     )
-    out = []
+    out, seen = [], set()
     for href in hrefs or []:
-        m = PROFILE_RE.search(href or "")
-        if m:
-            url = "https://www.realtor.com/realestateagents/" + m.group(1)
-            if url not in out:
-                out.append(url)
+        m = re.search(r"/realestateagents/([^/?#]+)", href or "")
+        if not m:
+            continue
+        seg = m.group(1)
+        if re.fullmatch(r"\d{5}", seg):                    # bare zip = search page
+            continue
+        if re.match(r"(intent-|sort-|agenttype-|pg-)", seg):  # search / pagination
+            continue
+        if not (re.fullmatch(r"[0-9a-f]{24}", seg) or "_" in seg):  # not an agent
+            continue
+        url = "https://www.realtor.com/realestateagents/" + seg
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
     return out
 
 
@@ -256,7 +265,7 @@ def scrape_zip_browser(driver, zip_code, log, max_pages=0, stop=lambda: False):
     for page in range(1, cap + 1):
         if stop():
             break
-        url = f"{BASE_URL}/{zip_code}/intent-buy-sell/pg-{page}"
+        url = f"{BASE_URL}/{zip_code}/intent-both/sort-relevantagents/agenttype-all/pg-{page}"
         # Give page 1 a few tries (a rotating proxy may get a fresh IP each time).
         ok = _get_listing(driver, url, tries=3 if page == 1 else 1)
         if not ok:

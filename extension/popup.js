@@ -56,7 +56,6 @@ function scrapeZips(zips, maxPages) {
   const pageCap = maxPages && maxPages > 0 ? maxPages : 120;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
-  const PROFILE_RE = /\/realestateagents\/([0-9a-f]{24})\b/g;
 
   let panel = document.getElementById("__ra_scraper_panel");
   if (!panel) {
@@ -105,12 +104,27 @@ function scrapeZips(zips, maxPages) {
     });
   }
 
-  const idsFromDoc = (doc) => {
-    const html = doc && doc.documentElement ? doc.documentElement.innerHTML : "";
+  // Collect agent-profile URLs from a results page's links. Robust to
+  // realtor.com's URL changes: keeps /realestateagents/<seg> links that look
+  // like an individual agent (24-hex id OR a name_city_state_id slug) and skips
+  // the search / pagination URLs (bare zip, intent-, sort-, agenttype-, pg-).
+  const agentLinksFromDoc = (doc) => {
     const out = [];
-    let m;
-    PROFILE_RE.lastIndex = 0;
-    while ((m = PROFILE_RE.exec(html)) !== null) out.push(m[1]);
+    const seen = new Set();
+    const anchors = doc ? doc.querySelectorAll('a[href*="/realestateagents/"]') : [];
+    anchors.forEach((a) => {
+      const href = a.getAttribute("href") || "";
+      let abs;
+      try { abs = new URL(href, location.origin).href; } catch (e) { return; }
+      const m = abs.match(/\/realestateagents\/([^/?#]+)/);
+      if (!m) return;
+      const seg = m[1];
+      if (/^\d{5}$/.test(seg)) return;
+      if (/^(intent-|sort-|agenttype-|pg-)/.test(seg)) return;
+      if (!(/^[0-9a-f]{24}$/.test(seg) || seg.includes("_"))) return;
+      const purl = location.origin + "/realestateagents/" + seg;
+      if (!seen.has(purl)) { seen.add(purl); out.push(purl); }
+    });
     return out;
   };
 
@@ -123,7 +137,7 @@ function scrapeZips(zips, maxPages) {
   // Load one results page, retrying past a transient block before giving up.
   async function loadListingPage(url, zip, page) {
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const doc = await loadInFrame(url, (d) => idsFromDoc(d).length > 0 || isBlocked(d), 15000);
+      const doc = await loadInFrame(url, (d) => agentLinksFromDoc(d).length > 0 || isBlocked(d), 15000);
       if (!(doc && isBlocked(doc))) return { doc, blocked: false };
       if (attempt < 3) {
         log(`  ${zip}: blocked on page ${page}, retry ${attempt}/2 in 5s...`);
@@ -191,8 +205,8 @@ function scrapeZips(zips, maxPages) {
   }
 
   async function scrapeOneZip(zip) {
-    const base = location.origin + "/realestateagents/" + zip + "/intent-buy-sell";
-    const ids = [];
+    const base = location.origin + "/realestateagents/" + zip + "/intent-both/sort-relevantagents/agenttype-all";
+    const profileUrls = [];
     const seen = new Set();
     for (let page = 1; page <= pageCap; page++) {
       const url = base + "/pg-" + page;
@@ -201,17 +215,17 @@ function scrapeZips(zips, maxPages) {
         log(`  ${zip}: still blocked on page ${page}. Browse realtor.com in this tab, then re-run this ZIP.`);
         break;
       }
-      const pageIds = doc ? idsFromDoc(doc) : [];
+      const pageUrls = doc ? agentLinksFromDoc(doc) : [];
       let added = 0;
-      for (const id of pageIds) if (!seen.has(id)) { seen.add(id); ids.push(id); added++; }
-      log(`  ${zip}: page ${page} -> +${added} (total ${ids.length})`);
+      for (const u of pageUrls) if (!seen.has(u)) { seen.add(u); profileUrls.push(u); added++; }
+      log(`  ${zip}: page ${page} -> +${added} (total ${profileUrls.length})`);
       if (added === 0) break;
       await sleep(500);
     }
 
     const rows = [];
-    for (let i = 0; i < ids.length; i++) {
-      const url = location.origin + "/realestateagents/" + ids[i];
+    for (let i = 0; i < profileUrls.length; i++) {
+      const url = profileUrls[i];
       const ready = (d) =>
         d.querySelector("h1") &&
         [...d.querySelectorAll("h1,h2,h3,h4")].some(
@@ -222,9 +236,9 @@ function scrapeZips(zips, maxPages) {
         const row = parseProfile(doc, url);
         row.search_zip = zip;
         rows.push(row);
-        log(`  ${zip}: [${i + 1}/${ids.length}] ${clean(doc.querySelector("h1").textContent) || "(no name)"}`);
+        log(`  ${zip}: [${i + 1}/${profileUrls.length}] ${clean(doc.querySelector("h1").textContent) || "(no name)"}`);
       } else {
-        log(`  ${zip}: [${i + 1}/${ids.length}] could not read, skipped.`);
+        log(`  ${zip}: [${i + 1}/${profileUrls.length}] could not read, skipped.`);
       }
       await sleep(400);
     }
