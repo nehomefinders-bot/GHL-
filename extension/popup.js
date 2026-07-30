@@ -593,9 +593,22 @@ function scrapeZips(zips, maxPages, turbo) {
       return await readClassic(job);
     }
 
-    // Turbo can afford a little more parallelism (each read is 1 light request).
-    let target = turbo ? 3 : 2;         // live concurrency, AIMD between 1 and MAX_T
-    const MAX_T = turbo ? 6 : 5, MIN_T = 1;
+    // Keep concurrency modest and pace proactively (below): realtor rate-limits
+    // how many requests a session makes in a short window, so we ride just under
+    // that limit instead of bursting into it and eating the long recovery pauses.
+    let target = 2;                     // live concurrency, AIMD between 1 and MAX_T
+    const MAX_T = turbo ? 4 : 5, MIN_T = 1;
+    // Proactive self-pacing: never START more than PACE_MAX real network requests
+    // in any rolling PACE_WINDOW. Rows already harvested from the results page make
+    // no request and are NOT paced. The AIMD backoff further below still catches
+    // any throttle that slips past this - nothing is ever lost either way.
+    const reqTimes = [];
+    const PACE_WINDOW = 20000, PACE_MAX = turbo ? 12 : 10;
+    const paceOk = () => {
+      const now = Date.now();
+      while (reqTimes.length && now - reqTimes[0] > PACE_WINDOW) reqTimes.shift();
+      return reqTimes.length < PACE_MAX;
+    };
     const MAX_THROTTLE_TRIES = 15;      // generous; the session almost always recovers first
     let inFlight = 0, done = 0, sinceGood = 0, throttleStreak = 0;
     let cooldownUntil = 0, lastNote = 0;
@@ -606,6 +619,11 @@ function scrapeZips(zips, maxPages, turbo) {
         const now = Date.now();
         if (now < cooldownUntil) { setTimeout(launch, cooldownUntil - now + 20); return; }
         while (inFlight < target && queue.length > 0 && Date.now() >= cooldownUntil) {
+          const job = queue[0];
+          const pre = turbo ? preRows.get(agentIdFromUrl(job.url)) : null;
+          const isListHit = !!(pre && isGoodRow(pre));   // served from memory, no request
+          if (!isListHit && !paceOk()) { setTimeout(launch, 500); return; }  // stay under the limit
+          if (!isListHit) reqTimes.push(Date.now());
           inFlight++;
           run(queue.shift());
         }
