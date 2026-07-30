@@ -13,6 +13,11 @@
     input { width: 100%; box-sizing: border-box; font-size: 14px; padding: 7px 8px;
             border: 1px solid #ccc; border-radius: 6px; }
     .note { font-size: 10px; color: #888; margin-top: 3px; }
+    .turbo { display: flex; align-items: flex-start; gap: 8px; background: #fff7e6;
+             border: 1px solid #f0d48a; border-radius: 6px; padding: 8px 10px; }
+    .turbo input { width: auto; margin: 2px 0 0; flex: none; }
+    .turbo label { margin: 0; font-size: 12px; font-weight: 600; }
+    .turbo .note { margin-top: 2px; font-weight: 400; }
     button { background: #c82021; color: #fff; border: none; border-radius: 6px; padding: 9px 12px;
              font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
     button:disabled { background: #999; cursor: default; }
@@ -35,6 +40,17 @@
     <label for="pages">Max pages per ZIP</label>
     <input id="pages" type="text" inputmode="numeric" placeholder="Leave blank = all pages">
     <div class="note">e.g. 5 to test. Blank = every page for each ZIP.</div>
+  </div>
+
+  <div class="field turbo">
+    <input id="turbo" type="checkbox" checked>
+    <div>
+      <label for="turbo">&#9889; Turbo mode (faster)</label>
+      <div class="note">Reads each agent from the page source in one request instead of
+      loading the whole page &mdash; much faster and gets throttled far less. If a profile
+      doesn't fully load that way, it automatically uses the normal method, so the data is
+      never worse. Uncheck to force the normal method.</div>
+    </div>
   </div>
 
   <button id="go">Scrape all ZIPs</button>

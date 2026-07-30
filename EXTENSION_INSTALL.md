@@ -30,9 +30,15 @@ warnings either, because there's no `.exe`.
    Optionally set **Max pages per ZIP** (e.g. `5`) to test; leave it **blank to
    scrape every page** of every ZIP.
 4. Click **Scrape all ZIPs**. A black progress box appears on the page. It walks
-   every results page for each ZIP and opens each agent (in hidden background
-   frames) to grab the name section and full **Contact information**. You can
-   close the little popup — it keeps running.
+   every results page for each ZIP and reads each agent's name section and full
+   **Contact information** (including phone numbers). You can close the little
+   popup — it keeps running.
+   - **⚡ Turbo mode** is on by default: it reads each agent straight from the
+     page source in a single request instead of loading the whole page, so it's
+     much faster and gets throttled far less. If a profile doesn't fully load
+     that way, it **automatically falls back** to the normal full-page method for
+     that agent, so the data is never worse — Turbo only speeds things up. Uncheck
+     the box to force the normal method (e.g. to compare the two on one ZIP).
 5. **Keep the tab open and your PC awake** (you can minimise Chrome and use other
    apps). It **auto-downloads** to your Downloads folder:
    - `realtor_agents_<zip>.csv` after each ZIP finishes, and

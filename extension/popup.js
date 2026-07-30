@@ -1,5 +1,6 @@
 const goBtn = document.getElementById("go");
 const statusBox = document.getElementById("status");
+const turboBox = document.getElementById("turbo");
 const setStatus = (m) => (statusBox.textContent = m);
 
 (async function init() {
@@ -31,31 +32,47 @@ goBtn.addEventListener("click", async () => {
       return;
     }
   }
+  const turbo = !!(turboBox && turboBox.checked);
 
   goBtn.disabled = true;
   setStatus(`Started ${zips.length} ZIP(s)` +
             (maxPages ? ` (first ${maxPages} page${maxPages > 1 ? "s" : ""} each)` : " (all pages each)") +
+            (turbo ? " - Turbo ON" : "") +
             ".\nA black progress box shows on the page. You can close this popup -\n" +
             "it keeps running. A CSV downloads after each ZIP, plus one combined\n" +
             "CSV of all ZIPs at the end. Keep the tab open and your PC awake.");
   chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    args: [zips, maxPages],
+    args: [zips, maxPages, turbo],
     func: scrapeZips,
   }).catch((e) => setStatus("Could not start: " + e.message));
 });
 
 // ---------------------------------------------------------------------------
 // Runs INSIDE the realtor.com page, in the user's real session. For each ZIP it
-// loads the results pages and each agent profile in hidden SAME-ORIGIN iframes
-// (so realtor.com's own JavaScript fills in the data, exactly like clicking),
-// downloads a CSV for that ZIP, then at the end downloads one combined CSV of
-// every ZIP and a summary of any ZIPs that need re-running.
+// loads the results pages and each agent profile, downloads a CSV for that ZIP,
+// then at the end downloads one combined CSV of every ZIP and a summary of any
+// ZIPs that need re-running.
+//
+// Two ways to read a profile:
+//   * Classic (always available): load the profile in a hidden SAME-ORIGIN
+//     iframe so realtor.com's own JavaScript fills in the data, exactly like
+//     clicking. Reliable, but each profile pulls the whole page (~30 requests).
+//   * Turbo (opt-in): fetch just the profile's HTML source in ONE request and
+//     read the name/phone/contact straight out of it - far fewer requests, so
+//     it's faster and trips realtor's rate-limit far less. Turbo is used ONLY
+//     when it returns a complete row (name + phone + contact info); for any
+//     profile where it comes up short it AUTOMATICALLY falls back to Classic,
+//     so the data is never worse than Classic - Turbo only ever speeds things
+//     up, it can't lower quality.
 // ---------------------------------------------------------------------------
-function scrapeZips(zips, maxPages) {
+function scrapeZips(zips, maxPages, turbo) {
   const pageCap = maxPages && maxPages > 0 ? maxPages : 120;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
+
+  // Turbo tally across the whole run (so we can tell the user if it's helping).
+  let turboTried = 0, turboWon = 0, turboHintShown = false;
 
   let panel = document.getElementById("__ra_scraper_panel");
   if (!panel) {
@@ -131,12 +148,16 @@ function scrapeZips(zips, maxPages) {
     return out;
   };
 
-  function isBlocked(doc) {
-    const t = (doc && doc.body ? doc.body.innerText : "").toLowerCase();
+  // realtor's block / rate-limit pages, detected from page text OR raw HTML.
+  function isBlockedText(t) {
+    t = (t || "").toLowerCase();
     return t.includes("your request could not be processed") ||
            t.includes("access to this page has been denied") ||
            t.includes("this is taking longer than usual") ||   // realtor rate-limit page
            t.includes("unblockrequest@realtor.com");
+  }
+  function isBlocked(doc) {
+    return isBlockedText(doc && doc.body ? doc.body.innerText : "");
   }
 
   // Load one results page, retrying past a transient block before giving up.
@@ -152,6 +173,7 @@ function scrapeZips(zips, maxPages) {
     return { doc: null, blocked: true };
   }
 
+  // ---- Classic reader: parse a fully-rendered profile document (iframe). ----
   function parseProfile(doc, url) {
     const h1 = doc.querySelector("h1");
     const name = clean(h1 && h1.textContent);
@@ -188,6 +210,97 @@ function scrapeZips(zips, maxPages) {
       website_links: [...links].join("; "),
       profile_url: url,
     };
+  }
+
+  // ---- Turbo reader: parse the SAME fields straight from the HTML source. ----
+  // Uses the same "name" + "Contact Information" section anchors as Classic, so
+  // where realtor serves the data in the page source the output matches Classic.
+  // Everything here is scoped to this agent's own name card + contact section (or
+  // the page's own structured-data block), so we never pull another agent's data.
+  function parseProfileStatic(doc, url) {
+    const h1 = doc.querySelector("h1");
+    const name = clean(h1 && h1.textContent);
+    const phones = new Set();
+    const links = new Set();
+    const scopes = [];
+    let nameSection = "", contactSection = "";
+
+    if (h1) {
+      const card = h1.closest("section, header, div") || h1;
+      scopes.push(card);
+      nameSection = clean(card.textContent);
+    }
+    const heading = [...doc.querySelectorAll("h1,h2,h3,h4")].find(
+      (h) => clean(h.textContent).toLowerCase() === "contact information"
+    );
+    if (heading) {
+      const section = heading.closest("section") || heading.parentElement;
+      if (section) { scopes.push(section); contactSection = clean(section.textContent); }
+    }
+    // Phones + external links, scoped to this agent's card / contact section.
+    // (No layout in a parsed-not-rendered doc, so we read textContent, not
+    // innerText, and scope tightly rather than scanning the whole page.)
+    scopes.forEach((sc) => {
+      sc.querySelectorAll("a[href]").forEach((a) => {
+        const href = a.getAttribute("href") || "";
+        if (href.startsWith("tel:")) phones.add(href.replace("tel:", "").trim());
+        else if (/^https?:/.test(href) && !href.includes("realtor.com")) links.add(href);
+      });
+      (clean(sc.textContent).match(/\(\d{3}\)\s?\d{3}-\d{4}/g) || []).forEach((p) => phones.add(p));
+    });
+
+    // If the visible markup didn't carry a phone, fall back to the page's own
+    // structured data (JSON-LD) for THIS page's subject only - single entity, so
+    // no chance of grabbing a different agent's number.
+    if (phones.size === 0) {
+      doc.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+        let data;
+        try { data = JSON.parse(s.textContent); } catch (e) { return; }
+        const arr = Array.isArray(data) ? data : (data && data["@graph"] ? data["@graph"] : [data]);
+        for (const o of arr) {
+          if (!o || typeof o !== "object") continue;
+          const type = String(o["@type"] || "").toLowerCase();
+          if (!/(person|agent|localbusiness|realestate)/.test(type)) continue;
+          if (o.telephone) {
+            const t = clean(String(o.telephone));
+            if (t.replace(/\D/g, "").length >= 10) phones.add(t);
+          }
+          if (o.url && /^https?:/.test(o.url) && !String(o.url).includes("realtor.com")) links.add(o.url);
+        }
+      });
+    }
+
+    return {
+      search_zip: "",
+      name,
+      name_section: nameSection,
+      contact_information: contactSection,
+      phones: [...phones].join("; "),
+      website_links: [...links].join("; "),
+      profile_url: url,
+    };
+  }
+
+  // A Turbo row is trusted ONLY when it's as complete as a Classic row would be:
+  // a name, at least one phone, and the contact-info text. Anything short of that
+  // triggers the Classic fallback, so Turbo never yields a thinner row.
+  const isGoodRow = (r) => !!(r && r.name && r.phones && r.contact_information);
+
+  // One lightweight request for the profile's HTML, parsed in place. Same-origin
+  // (we're on realtor.com), so the request carries the user's real session.
+  async function turboFetchProfile(url) {
+    let html;
+    try {
+      const resp = await fetch(url, { credentials: "same-origin", redirect: "follow" });
+      html = await resp.text();
+    } catch (e) {
+      return { error: true };            // network hiccup -> caller falls back to Classic
+    }
+    if (isBlockedText(html)) return { blocked: true };
+    let doc;
+    try { doc = new DOMParser().parseFromString(html, "text/html"); }
+    catch (e) { return { error: true }; }
+    return { row: parseProfileStatic(doc, url) };
   }
 
   function toCSV(rows) {
@@ -250,8 +363,30 @@ function scrapeZips(zips, maxPages) {
     // throttled page is caught instantly instead of waiting the full timeout.
     const readyOrBlocked = (d) => isReady(d) || isBlocked(d);
 
-    let target = 2;                     // live concurrency, AIMD between 1 and 5
-    const MAX_T = 5, MIN_T = 1;
+    // Classic read of one profile (hidden iframe render).
+    async function readClassic(job) {
+      const doc = await loadInFrame(job.url, readyOrBlocked, 12000);
+      if (doc && isBlocked(doc)) return { kind: "blocked" };
+      if (doc && doc.querySelector("h1")) return { kind: "ok", row: parseProfile(doc, job.url), via: "classic" };
+      return { kind: "empty" };
+    }
+
+    // Get one profile's row. In Turbo we try the 1-request fetch first and use it
+    // only when it's complete; otherwise (and always in Classic mode) we render.
+    async function acquireRow(job) {
+      if (turbo) {
+        turboTried++;
+        const res = await turboFetchProfile(job.url);
+        if (res.blocked) return { kind: "blocked" };
+        if (res.row && isGoodRow(res.row)) { turboWon++; return { kind: "ok", row: res.row, via: "turbo" }; }
+        // fetch worked but data was thin -> fall through to a Classic render.
+      }
+      return await readClassic(job);
+    }
+
+    // Turbo can afford a little more parallelism (each read is 1 light request).
+    let target = turbo ? 3 : 2;         // live concurrency, AIMD between 1 and MAX_T
+    const MAX_T = turbo ? 6 : 5, MIN_T = 1;
     const MAX_THROTTLE_TRIES = 15;      // generous; the session almost always recovers first
     let inFlight = 0, done = 0, sinceGood = 0, throttleStreak = 0;
     let cooldownUntil = 0, lastNote = 0;
@@ -268,8 +403,8 @@ function scrapeZips(zips, maxPages) {
       };
       const run = async (job) => {
         try {
-          const doc = await loadInFrame(job.url, readyOrBlocked, 12000);
-          if (doc && isBlocked(doc)) {                          // realtor is throttling
+          const res = await acquireRow(job);
+          if (res.kind === "blocked") {                         // realtor is throttling
             job.tries++;
             throttleStreak++; sinceGood = 0;
             target = Math.max(MIN_T, Math.floor(target / 2));   // multiplicative decrease
@@ -283,17 +418,24 @@ function scrapeZips(zips, maxPages) {
                   ` - nothing lost, ${total - done} to go`);
               lastNote = Date.now() + 3000;
             }
-          } else if (doc && doc.querySelector("h1")) {          // got the real profile
-            const row = parseProfile(doc, job.url);
+          } else if (res.kind === "ok") {                       // got the real profile
+            const row = res.row;
             row.search_zip = zip;
             rows[job.i] = row; done++;
             throttleStreak = 0; sinceGood++;
             if (sinceGood >= 5 && target < MAX_T) { target++; sinceGood = 0; }  // additive increase
-            log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"}`);
+            log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"}${res.via === "turbo" ? " (turbo)" : ""}`);
           } else {                                              // not blocked, no data (dead/slow)
             job.dead++;
             if (job.dead < 4) queue.push(job);
             else { rows[job.i] = null; done++; log(`  ${zip}: [${done}/${total}] unreadable, skipped`); }
+          }
+          // One-time heads-up if Turbo isn't finding embedded data on these pages
+          // (it still works via the Classic fallback - just no speed gain here).
+          if (turbo && !turboHintShown && turboTried >= 10 && turboWon === 0) {
+            turboHintShown = true;
+            log("  Turbo: these profiles don't expose data in the page source - " +
+                "using the Classic method (you can uncheck Turbo).");
           }
         } catch (e) {
           job.dead++;
@@ -311,7 +453,7 @@ function scrapeZips(zips, maxPages) {
 
   (async () => {
     try {
-      log(`Scraping ${zips.length} ZIP(s): ${zips.join(", ")}`);
+      log(`Scraping ${zips.length} ZIP(s): ${zips.join(", ")}` + (turbo ? "  [Turbo ON]" : ""));
       log(maxPages && maxPages > 0 ? `Limit: first ${maxPages} page(s) each.` : "Limit: all pages each.");
       const allRows = [];
       const zeroZips = [];
@@ -333,6 +475,10 @@ function scrapeZips(zips, maxPages) {
       }
 
       log(`ALL DONE. ${allRows.length} agents across ${zips.length} ZIP(s). Check your Downloads folder.`);
+      if (turbo && turboTried > 0) {
+        log(`Turbo: read ${turboWon}/${turboTried} profiles the fast way` +
+            (turboWon < turboTried ? `; the other ${turboTried - turboWon} used the Classic fallback.` : "."));
+      }
       if (zeroZips.length > 0) {
         log(`NOTE: ${zeroZips.length} ZIP(s) returned 0 agents (likely a block). Re-run just these:`);
         log("  " + zeroZips.join(", "));
