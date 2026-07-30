@@ -489,7 +489,7 @@ function scrapeZips(zips, maxPages, turbo) {
     const esc = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
     const out = [cols.join(",")];
     for (const r of rows) out.push(cols.map((c) => esc(r[c])).join(","));
-    return "﻿" + out.join("\r\n");
+    return "\ufeff" + out.join("\r\n");   // BOM so Excel reads UTF-8 correctly
   }
 
   function download(csv, name) {
