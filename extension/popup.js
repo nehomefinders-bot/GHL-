@@ -74,7 +74,8 @@ function scrapeZips(zips, maxPages, turbo) {
   // Turbo tally across the whole run (so we can tell the user if it's helping).
   // turboOff latches on if Turbo clearly can't read these pages, so we stop doing
   // an extra fetch before each Classic render (which would only add to the load).
-  let turboTried = 0, turboWon = 0, turboHintShown = false, turboOff = false;
+  // listWon counts agents we read straight from the results page (no profile hit).
+  let turboTried = 0, turboWon = 0, turboHintShown = false, turboOff = false, listWon = 0;
 
   let panel = document.getElementById("__ra_scraper_panel");
   if (!panel) {
@@ -214,38 +215,52 @@ function scrapeZips(zips, maxPages, turbo) {
     };
   }
 
-  // realtor.com is a Next.js app; when the phone/contact isn't in the visible
-  // markup it's usually in the page's hydration JSON (__NEXT_DATA__) or an inline
-  // JSON blob. Pull it out - but ONLY from the object that is THIS agent (matched
-  // by the profile's own name or the id in the URL), and never descend into
-  // "similar / other agents" lists, so a Turbo row can't inherit someone else's
-  // number.
+  // realtor.com is a Next.js app; the agent's phone/contact is usually in the
+  // page's hydration JSON (__NEXT_DATA__ / inline JSON) even when it isn't in the
+  // visible markup. We pull it out - but ONLY from the object that IS a given
+  // agent (matched by name or the id in the profile URL), and we never grab a
+  // number that sits inside a "similar / other agents" list, so a row can't
+  // inherit someone else's number.
   const normName = (s) => clean(String(s || "")).toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
   const fmtPhone = (d) => "(" + d.slice(0, 3) + ") " + d.slice(3, 6) + "-" + d.slice(6);
-  function extractFromEmbeddedJson(doc, url, h1Name) {
-    const wantName = normName(h1Name);
-    const seg = (url.match(/\/realestateagents\/([^/?#]+)/) || [])[1] || "";
-    let wantId = "";
-    if (/^[0-9a-f]{24}$/i.test(seg)) wantId = seg.toLowerCase();
-    else { const d = seg.match(/\d{6,}/); if (d) wantId = d[0]; }
-
+  const agentIdFromUrl = (url) => {
+    const seg = (String(url).match(/\/realestateagents\/([^/?#]+)/) || [])[1] || "";
+    if (/^[0-9a-f]{24}$/i.test(seg)) return seg.toLowerCase();
+    const d = seg.match(/\d{6,}/);
+    return d ? d[0] : "";
+  };
+  function parseJsonBlobs(doc) {
     const blobs = [];
     doc.querySelectorAll('script#__NEXT_DATA__, script[type="application/json"]').forEach((s) => {
       try { blobs.push(JSON.parse(s.textContent || "")); } catch (e) {}
     });
     doc.querySelectorAll("script:not([src])").forEach((s) => {
       const txt = s.textContent || "";
-      if (txt.length > 500000 || !/phone|advertiser|contact/i.test(txt)) return;
+      if (txt.length > 800000 || !/phone|advertiser|contact/i.test(txt)) return;
       const m = txt.match(/\{[\s\S]*\}/);
       if (m) { try { blobs.push(JSON.parse(m[0])); } catch (e) {} }
     });
-    if (blobs.length === 0) return { phones: [], links: [], contactBits: [] };
-
+    return blobs;
+  }
+  // walk avoids diving into OTHER-people lists (so we don't waste time / risk a
+  // stray match); "agents"/"results" are NOT skipped here so a RESULTS page's own
+  // agent array stays reachable - safe because we only ever collect from a node
+  // that matches the specific agent we're after.
+  const SKIP_WALK = /(similar|related|recommend|nearby|other_agent|otheragent|review|testimonial|featured)/i;
+  // collect (inside a matched agent) additionally refuses any nested people list.
+  const SKIP_COLLECT = /(similar|related|recommend|nearby|other|review|testimonial|team|coagent|co_agent|^agents$|members?$|member_list|results)/i;
+  const nameFromNode = (node) => {
+    for (const key of ["full_name", "fullname", "display_name", "displayname", "agent_name", "name"]) {
+      const v = node[key];
+      if (typeof v === "string" && v.trim()) return clean(v);
+    }
+    return "";
+  };
+  // Collect one agent's name/phone/contact/website from already-parsed blobs,
+  // matched by name or URL id, scoped to that agent's own object.
+  function collectAgentFromBlobs(blobs, wantName, wantId) {
     const phones = new Set(), links = new Set(), contactBits = [];
-    // Never wander into these - they hold OTHER people's records.
-    const SKIP = /(similar|related|recommend|nearby|other|review|testimonial|team|coagent|co_agent|^agents$|member_list)/i;
-
-    // Is this object THIS agent? (name or URL-id appears as a direct field.)
+    let name = "";
     const identifies = (node) => {
       for (const [, v] of Object.entries(node)) {
         if (typeof v === "string") {
@@ -257,7 +272,6 @@ function scrapeZips(zips, maxPages, turbo) {
       }
       return false;
     };
-    // Pull phone / contact / website values out of the matched agent's own subtree.
     const collect = (node, depth) => {
       if (!node || typeof node !== "object" || depth > 3) return;
       if (Array.isArray(node)) { node.forEach((v) => collect(v, depth + 1)); return; }
@@ -277,7 +291,7 @@ function scrapeZips(zips, maxPages, turbo) {
                      /(url|website|web|href)/.test(key)) {
             links.add(v);
           }
-        } else if (!SKIP.test(key)) {
+        } else if (!SKIP_COLLECT.test(key)) {
           collect(v, depth + 1);
         }
       }
@@ -285,13 +299,45 @@ function scrapeZips(zips, maxPages, turbo) {
     const walk = (node) => {
       if (!node || typeof node !== "object") return;
       if (Array.isArray(node)) { node.forEach(walk); return; }
-      if (identifies(node)) collect(node, 0);
+      if (identifies(node)) { if (!name) name = nameFromNode(node); collect(node, 0); }
       for (const [k, v] of Object.entries(node)) {
-        if (v && typeof v === "object" && !SKIP.test(k.toLowerCase())) walk(v);
+        if (v && typeof v === "object" && !SKIP_WALK.test(k.toLowerCase())) walk(v);
       }
     };
     blobs.forEach(walk);
-    return { phones: [...phones], links: [...links], contactBits: [...new Set(contactBits)].slice(0, 8) };
+    return { name, phones: [...phones], links: [...links], contactBits: [...new Set(contactBits)].slice(0, 8) };
+  }
+  // Per-profile: read this agent's data from the profile page's own JSON.
+  function extractFromEmbeddedJson(doc, url, h1Name) {
+    const blobs = parseJsonBlobs(doc);
+    if (blobs.length === 0) return { phones: [], links: [], contactBits: [] };
+    return collectAgentFromBlobs(blobs, normName(h1Name), agentIdFromUrl(url));
+  }
+  // Per-RESULTS-page: pull a complete row for each agent listed on it, straight
+  // from the page's own JSON, keyed by the agent id in their profile URL - so we
+  // can skip visiting those profiles entirely. Each phone stays with its own
+  // agent (matched by that agent's unique id).
+  function harvestListingRows(doc, profileUrls) {
+    const out = new Map();
+    const blobs = parseJsonBlobs(doc);
+    if (blobs.length === 0) return out;
+    for (const url of profileUrls) {
+      const id = agentIdFromUrl(url);
+      if (!id || out.has(id)) continue;
+      const a = collectAgentFromBlobs(blobs, "", id);
+      if (a.phones.length) {
+        out.set(id, {
+          search_zip: "",
+          name: a.name,
+          name_section: a.name,
+          contact_information: clean(a.contactBits.join(" | ")),
+          phones: a.phones.join("; "),
+          website_links: a.links.join("; "),
+          profile_url: url,
+        });
+      }
+    }
+    return out;
   }
 
   // ---- Turbo reader: parse the SAME fields straight from the HTML source. ----
@@ -419,6 +465,9 @@ function scrapeZips(zips, maxPages, turbo) {
     const base = location.origin + "/realestateagents/" + zip + "/intent-both/sort-relevantagents/agenttype-all";
     const profileUrls = [];
     const seen = new Set();
+    // Rows we manage to read straight from a results page's own JSON, keyed by
+    // agent id. When Turbo is on we try this first and skip that profile visit.
+    const preRows = new Map();
     for (let page = 1; page <= pageCap; page++) {
       const url = base + "/pg-" + page;
       const { doc, blocked } = await loadListingPage(url, zip, page);
@@ -429,9 +478,16 @@ function scrapeZips(zips, maxPages, turbo) {
       const pageUrls = doc ? agentLinksFromDoc(doc) : [];
       let added = 0;
       for (const u of pageUrls) if (!seen.has(u)) { seen.add(u); profileUrls.push(u); added++; }
+      if (turbo && doc) {
+        try { harvestListingRows(doc, pageUrls).forEach((v, k) => { if (!preRows.has(k)) preRows.set(k, v); }); }
+        catch (e) {}
+      }
       log(`  ${zip}: page ${page} -> +${added} (total ${profileUrls.length})`);
       if (added === 0) break;
       await sleep(150);
+    }
+    if (turbo && preRows.size > 0) {
+      log(`  ${zip}: ${preRows.size} agent(s) read straight from the results pages (no profile visit needed).`);
     }
 
     // Scrape profiles fast AND complete. realtor.com rate-limits a session that
@@ -464,9 +520,15 @@ function scrapeZips(zips, maxPages, turbo) {
       return { kind: "empty" };
     }
 
-    // Get one profile's row. In Turbo we try the 1-request fetch first and use it
-    // only when it's complete; otherwise (and always in Classic mode) we render.
+    // Get one profile's row, cheapest source first:
+    //  1) a complete row already harvested from the results page  -> NO request;
+    //  2) Turbo's 1-request profile fetch (used only if complete) -> 1 request;
+    //  3) Classic full render (always available)                  -> ~30 requests.
     async function acquireRow(job) {
+      if (turbo) {
+        const pre = preRows.get(agentIdFromUrl(job.url));
+        if (pre && isGoodRow(pre)) { listWon++; return { kind: "ok", row: { ...pre }, via: "list" }; }
+      }
       if (turbo && !turboOff) {
         turboTried++;
         const res = await turboFetchProfile(job.url);
@@ -517,7 +579,8 @@ function scrapeZips(zips, maxPages, turbo) {
             rows[job.i] = row; done++;
             throttleStreak = 0; sinceGood++;
             if (sinceGood >= 5 && target < MAX_T) { target++; sinceGood = 0; }  // additive increase
-            log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"}${res.via === "turbo" ? " (turbo)" : ""}`);
+            const tag = res.via === "turbo" ? " (turbo)" : res.via === "list" ? " (from list)" : "";
+            log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"}${tag}`);
           } else {                                              // not blocked, no data (dead/slow)
             job.dead++;
             if (job.dead < 4) queue.push(job);
@@ -569,9 +632,12 @@ function scrapeZips(zips, maxPages, turbo) {
       }
 
       log(`ALL DONE. ${allRows.length} agents across ${zips.length} ZIP(s). Check your Downloads folder.`);
-      if (turbo && turboTried > 0) {
-        log(`Turbo: read ${turboWon}/${turboTried} profiles the fast way` +
-            (turboWon < turboTried ? `; the other ${turboTried - turboWon} used the Classic fallback.` : "."));
+      if (turbo && (listWon > 0 || turboTried > 0)) {
+        const bits = [];
+        if (listWon > 0) bits.push(`${listWon} straight from results pages (no profile visit)`);
+        if (turboWon > 0) bits.push(`${turboWon} via fast profile fetch`);
+        if (turboTried - turboWon > 0) bits.push(`${turboTried - turboWon} via Classic fallback`);
+        log("Turbo summary: " + bits.join(", ") + ".");
       }
       if (zeroZips.length > 0) {
         log(`NOTE: ${zeroZips.length} ZIP(s) returned 0 agents (likely a block). Re-run just these:`);
