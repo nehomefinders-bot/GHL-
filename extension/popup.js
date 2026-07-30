@@ -72,7 +72,9 @@ function scrapeZips(zips, maxPages, turbo) {
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
 
   // Turbo tally across the whole run (so we can tell the user if it's helping).
-  let turboTried = 0, turboWon = 0, turboHintShown = false;
+  // turboOff latches on if Turbo clearly can't read these pages, so we stop doing
+  // an extra fetch before each Classic render (which would only add to the load).
+  let turboTried = 0, turboWon = 0, turboHintShown = false, turboOff = false;
 
   let panel = document.getElementById("__ra_scraper_panel");
   if (!panel) {
@@ -212,6 +214,86 @@ function scrapeZips(zips, maxPages, turbo) {
     };
   }
 
+  // realtor.com is a Next.js app; when the phone/contact isn't in the visible
+  // markup it's usually in the page's hydration JSON (__NEXT_DATA__) or an inline
+  // JSON blob. Pull it out - but ONLY from the object that is THIS agent (matched
+  // by the profile's own name or the id in the URL), and never descend into
+  // "similar / other agents" lists, so a Turbo row can't inherit someone else's
+  // number.
+  const normName = (s) => clean(String(s || "")).toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+  const fmtPhone = (d) => "(" + d.slice(0, 3) + ") " + d.slice(3, 6) + "-" + d.slice(6);
+  function extractFromEmbeddedJson(doc, url, h1Name) {
+    const wantName = normName(h1Name);
+    const seg = (url.match(/\/realestateagents\/([^/?#]+)/) || [])[1] || "";
+    let wantId = "";
+    if (/^[0-9a-f]{24}$/i.test(seg)) wantId = seg.toLowerCase();
+    else { const d = seg.match(/\d{6,}/); if (d) wantId = d[0]; }
+
+    const blobs = [];
+    doc.querySelectorAll('script#__NEXT_DATA__, script[type="application/json"]').forEach((s) => {
+      try { blobs.push(JSON.parse(s.textContent || "")); } catch (e) {}
+    });
+    doc.querySelectorAll("script:not([src])").forEach((s) => {
+      const txt = s.textContent || "";
+      if (txt.length > 500000 || !/phone|advertiser|contact/i.test(txt)) return;
+      const m = txt.match(/\{[\s\S]*\}/);
+      if (m) { try { blobs.push(JSON.parse(m[0])); } catch (e) {} }
+    });
+    if (blobs.length === 0) return { phones: [], links: [], contactBits: [] };
+
+    const phones = new Set(), links = new Set(), contactBits = [];
+    // Never wander into these - they hold OTHER people's records.
+    const SKIP = /(similar|related|recommend|nearby|other|review|testimonial|team|coagent|co_agent|^agents$|member_list)/i;
+
+    // Is this object THIS agent? (name or URL-id appears as a direct field.)
+    const identifies = (node) => {
+      for (const [, v] of Object.entries(node)) {
+        if (typeof v === "string") {
+          if (wantName && normName(v) === wantName) return true;
+          if (wantId && (v.toLowerCase() === wantId || (wantId.length >= 6 && v.includes(wantId)))) return true;
+        } else if (typeof v === "number") {
+          if (wantId && String(v) === wantId) return true;
+        }
+      }
+      return false;
+    };
+    // Pull phone / contact / website values out of the matched agent's own subtree.
+    const collect = (node, depth) => {
+      if (!node || typeof node !== "object" || depth > 3) return;
+      if (Array.isArray(node)) { node.forEach((v) => collect(v, depth + 1)); return; }
+      for (const [k, v] of Object.entries(node)) {
+        const key = k.toLowerCase();
+        if (typeof v === "string" || typeof v === "number") {
+          const sv = String(v);
+          if (/phone|number|\btel\b/.test(key)) {
+            const d = sv.replace(/\D/g, "");
+            if (d.length === 10) phones.add(fmtPhone(d));
+            else if (d.length === 11 && d[0] === "1") phones.add(fmtPhone(d.slice(1)));
+            (sv.match(/\(\d{3}\)\s?\d{3}-\d{4}/g) || []).forEach((p) => phones.add(p));
+          } else if (typeof v === "string" && v.trim() && v.trim().length <= 120 &&
+                     /(office|broker|company|agency|address|city|state|email|title|name)/.test(key)) {
+            contactBits.push(v.trim());
+          } else if (typeof v === "string" && /^https?:/.test(v) && !v.includes("realtor.com") &&
+                     /(url|website|web|href)/.test(key)) {
+            links.add(v);
+          }
+        } else if (!SKIP.test(key)) {
+          collect(v, depth + 1);
+        }
+      }
+    };
+    const walk = (node) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) { node.forEach(walk); return; }
+      if (identifies(node)) collect(node, 0);
+      for (const [k, v] of Object.entries(node)) {
+        if (v && typeof v === "object" && !SKIP.test(k.toLowerCase())) walk(v);
+      }
+    };
+    blobs.forEach(walk);
+    return { phones: [...phones], links: [...links], contactBits: [...new Set(contactBits)].slice(0, 8) };
+  }
+
   // ---- Turbo reader: parse the SAME fields straight from the HTML source. ----
   // Uses the same "name" + "Contact Information" section anchors as Classic, so
   // where realtor serves the data in the page source the output matches Classic.
@@ -268,6 +350,17 @@ function scrapeZips(zips, maxPages, turbo) {
           if (o.url && /^https?:/.test(o.url) && !String(o.url).includes("realtor.com")) links.add(o.url);
         }
       });
+    }
+
+    // Still thin? Read the page's hydration JSON (__NEXT_DATA__ / inline JSON),
+    // scoped to THIS agent - this is where realtor keeps the phone when it isn't
+    // in the visible markup. contact_information is built from the agent's own
+    // office/address fields only if the visible section wasn't present.
+    if (phones.size === 0 || !contactSection) {
+      const emb = extractFromEmbeddedJson(doc, url, name);
+      emb.phones.forEach((p) => phones.add(p));
+      emb.links.forEach((l) => links.add(l));
+      if (!contactSection && emb.contactBits.length) contactSection = clean(emb.contactBits.join(" | "));
     }
 
     return {
@@ -374,7 +467,7 @@ function scrapeZips(zips, maxPages, turbo) {
     // Get one profile's row. In Turbo we try the 1-request fetch first and use it
     // only when it's complete; otherwise (and always in Classic mode) we render.
     async function acquireRow(job) {
-      if (turbo) {
+      if (turbo && !turboOff) {
         turboTried++;
         const res = await turboFetchProfile(job.url);
         if (res.blocked) return { kind: "blocked" };
@@ -432,10 +525,11 @@ function scrapeZips(zips, maxPages, turbo) {
           }
           // One-time heads-up if Turbo isn't finding embedded data on these pages
           // (it still works via the Classic fallback - just no speed gain here).
-          if (turbo && !turboHintShown && turboTried >= 10 && turboWon === 0) {
+          if (turbo && !turboHintShown && turboTried >= 8 && turboWon === 0) {
             turboHintShown = true;
+            turboOff = true;   // stop the extra fetch; go pure Classic (no added load)
             log("  Turbo: these profiles don't expose data in the page source - " +
-                "using the Classic method (you can uncheck Turbo).");
+                "switching to Classic for the rest (no extra requests; nothing lost).");
           }
         } catch (e) {
           job.dead++;
