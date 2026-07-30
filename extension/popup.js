@@ -74,8 +74,11 @@ function scrapeZips(zips, maxPages, turbo) {
   // Turbo tally across the whole run (so we can tell the user if it's helping).
   // turboOff latches on if Turbo clearly can't read these pages, so we stop doing
   // an extra fetch before each Classic render (which would only add to the load).
-  // listWon counts agents we read straight from the results page (no profile hit).
-  let turboTried = 0, turboWon = 0, turboHintShown = false, turboOff = false, listWon = 0;
+  // listWon counts agents read straight from the results page; cacheWon = agents
+  // replayed from a previous run's cache; dupWon = same agent seen in an earlier
+  // ZIP of this run. None of those spend any of realtor's request budget.
+  let turboTried = 0, turboWon = 0, turboHintShown = false, turboOff = false;
+  let listWon = 0, cacheWon = 0, dupWon = 0;
 
   let panel = document.getElementById("__ra_scraper_panel");
   if (!panel) {
@@ -93,6 +96,86 @@ function scrapeZips(zips, maxPages, turbo) {
     lines.push(m);
     panel.textContent = lines.slice(-300).join("\n");
     panel.scrollTop = panel.scrollHeight;
+  };
+
+  // ---- Global request pacing (whole run, every ZIP). realtor's rate limit is
+  // per-session, and a BLOCKED request is the most expensive thing there is: it
+  // returns no data and extends the penalty. So instead of bursting until we get
+  // blocked and then waiting out long recoveries, we meter every real network
+  // request through one token bucket: a small initial burst, then a steady
+  // trickle. The trickle speed adapts - a throttle slows it down, a long clean
+  // stretch speeds it back up - converging on the fastest rate realtor sustains.
+  let paceEvery = 2500;                    // ms per request once the burst is spent
+  const PACE_FLOOR = 1500, PACE_CEIL = 30000;
+  let tokens = 10, tokenCap = 10, lastToken = Date.now();
+  let cleanRun = 0, paceNoteAt = 0;
+  const takeToken = () => {                // 0 = go now, else ms until next slot
+    const now = Date.now();
+    const add = Math.floor((now - lastToken) / paceEvery);
+    if (add > 0) {
+      tokens += add;
+      lastToken += add * paceEvery;
+      if (tokens >= tokenCap) { tokens = tokenCap; lastToken = now; }
+    }
+    if (tokens > 0) { tokens--; return 0; }
+    return Math.max(20, paceEvery - (now - lastToken));
+  };
+  const paceWait = async (label) => {      // wait for our turn to hit the network
+    for (;;) {
+      const w = takeToken();
+      if (w <= 0) return;
+      if (w > 1500 && Date.now() > paceNoteAt) {
+        paceNoteAt = Date.now() + 10000;
+        log(`  pacing (${Math.round(paceEvery / 1000)}s/request) to stay under realtor's limit` +
+            (label ? ` - ${label}` : "") + "...");
+      }
+      await sleep(Math.min(w, 1500));
+    }
+  };
+  const paceThrottled = () => {            // got blocked: ease off (multiplicative increase)
+    tokens = 0; tokenCap = 2; cleanRun = 0;
+    paceEvery = Math.min(PACE_CEIL, Math.round(paceEvery * 1.4));
+    lastToken = Date.now();
+  };
+  const paceSuccess = () => {              // clean streak: probe back toward the limit
+    if (++cleanRun >= 2) { cleanRun = 0; paceEvery = Math.max(PACE_FLOOR, paceEvery - 600); }
+  };
+
+  // ---- Never scrape the same agent twice. memRows dedups across the ZIPs of
+  // this run (nearby ZIPs share many agents). The localStorage cache (7 days)
+  // survives re-runs: an interrupted or repeated run replays finished agents
+  // instantly instead of re-spending realtor's request budget on them.
+  const memRows = new Map();
+  const CACHE_KEY = "__ra_agent_cache_v1";
+  const CACHE_TTL = 7 * 24 * 3600 * 1000, CACHE_MAX = 2500;
+  let diskCache = {};
+  try { diskCache = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}") || {}; } catch (e) { diskCache = {}; }
+  const cacheGet = (url) => {
+    const e = diskCache[url];
+    return e && e.r && (Date.now() - e.t) < CACHE_TTL ? e.r : null;
+  };
+  const flushCache = () => {
+    try {
+      let keys = Object.keys(diskCache);
+      if (keys.length > CACHE_MAX) {
+        keys.sort((a, b) => diskCache[a].t - diskCache[b].t);
+        for (const k of keys.slice(0, keys.length - CACHE_MAX)) delete diskCache[k];
+      }
+      localStorage.setItem(CACHE_KEY, JSON.stringify(diskCache));
+    } catch (e) {                          // storage full: drop the oldest half
+      try {
+        const keys = Object.keys(diskCache).sort((a, b) => diskCache[a].t - diskCache[b].t);
+        for (const k of keys.slice(0, Math.ceil(keys.length / 2))) delete diskCache[k];
+        localStorage.setItem(CACHE_KEY, JSON.stringify(diskCache));
+      } catch (e2) {}
+    }
+  };
+  let cacheDirty = 0;
+  const keep = (url, row) => {             // remember a completed agent
+    const copy = { ...row };
+    memRows.set(url, copy);
+    diskCache[url] = { t: Date.now(), r: copy };
+    if (++cacheDirty >= 25) { cacheDirty = 0; flushCache(); }
   };
 
   function loadInFrame(url, isReady, timeoutMs) {
@@ -189,11 +272,46 @@ function scrapeZips(zips, maxPages, turbo) {
     return isBlockedText(doc && doc.body ? doc.body.innerText : "");
   }
 
+  // One lightweight fetch of a results page's HTML (1 request instead of the
+  // ~30 a full iframe render pulls in). Used in Turbo; falls back to the iframe.
+  async function fetchListingDoc(url) {
+    let html;
+    try {
+      const resp = await fetch(url, { credentials: "same-origin", redirect: "follow" });
+      html = await resp.text();
+    } catch (e) { return { error: true }; }
+    if (isBlockedText(html)) return { blocked: true };
+    try { return { doc: new DOMParser().parseFromString(html, "text/html") }; }
+    catch (e) { return { error: true }; }
+  }
+
   // Load one results page, retrying past a transient block before giving up.
+  // In Turbo we try the 1-request fetch first; if it comes back without agent
+  // links (page rendered by JS, or genuinely past the last page) we confirm with
+  // the full iframe render so no page is ever ended early on a hunch.
   async function loadListingPage(url, zip, page) {
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const doc = await loadInFrame(url, (d) => agentLinksFromDoc(d).length > 0 || isBlocked(d), 15000);
-      if (!(doc && isBlocked(doc))) return { doc, blocked: false };
+      if (turbo) {
+        await paceWait("results page");
+        const r = await fetchListingDoc(url);
+        if (r.blocked) {
+          paceThrottled();
+        } else if (r.doc && agentLinksFromDoc(r.doc).length > 0) {
+          return { doc: r.doc, blocked: false };
+        }
+        // not blocked but no links -> confirm below with a full render
+        if (!r.blocked) {
+          await paceWait("results page");
+          const doc = await loadInFrame(url, (d) => agentLinksFromDoc(d).length > 0 || isBlocked(d), 15000);
+          if (!(doc && isBlocked(doc))) return { doc, blocked: false };
+          paceThrottled();
+        }
+      } else {
+        await paceWait("results page");
+        const doc = await loadInFrame(url, (d) => agentLinksFromDoc(d).length > 0 || isBlocked(d), 15000);
+        if (!(doc && isBlocked(doc))) return { doc, blocked: false };
+        paceThrottled();
+      }
       if (attempt < 3) {
         log(`  ${zip}: blocked on page ${page}, retry ${attempt}/2 in 5s...`);
         await sleep(5000);
@@ -545,14 +663,11 @@ function scrapeZips(zips, maxPages, turbo) {
     }
 
     // Scrape profiles fast AND complete. realtor.com rate-limits a session that
-    // requests too quickly (its "taking longer than usual" page), and hammering
-    // it with fast retries keeps it throttled. So we ride just under the limit
-    // and never drop anyone:
-    //  - a throttled agent is REQUEUED and retried later, never saved or skipped;
-    //  - on a throttle we cut concurrency hard and pause (exponential backoff),
-    //    then ramp back up slowly (AIMD, like TCP) so we don't re-trigger it;
-    //  - if the session gets stuck, we pause longer and suggest clicking around
-    //    realtor.com in the tab to clear it - still nothing lost.
+    // requests too quickly, so the GLOBAL token bucket above is what sets the
+    // pace: a steady trickle that eases itself the moment realtor pushes back and
+    // speeds back up over a clean stretch - NO burst-then-freeze cycles and no
+    // fixed multi-second cooldowns to sit through. On a block the agent is simply
+    // REQUEUED and retried later at the eased pace, never saved or skipped.
     // rows[] is indexed by position, so the CSV keeps the original listing order.
     const total = profileUrls.length;
     const rows = new Array(total);
@@ -574,56 +689,49 @@ function scrapeZips(zips, maxPages, turbo) {
       return { kind: "empty" };
     }
 
-    // Get one profile's row, cheapest source first:
-    //  1) a complete row already harvested from the results page  -> NO request;
-    //  2) Turbo's 1-request profile fetch (used only if complete) -> 1 request;
-    //  3) Classic full render (always available)                  -> ~30 requests.
+    // Get one profile's row, cheapest source first. 1-4 spend NO request budget:
+    //  1) same agent already done in an earlier ZIP of this run     -> free;
+    //  2) agent in the 7-day cache from a previous run              -> free;
+    //  3) complete row harvested from the results page              -> free;
+    //  4) Turbo's 1-request profile fetch (used only if complete)   -> 1 request;
+    //  5) Classic full render (always available)                    -> ~30 requests.
     async function acquireRow(job) {
+      const dup = memRows.get(job.url);
+      if (dup && isGoodRow(dup)) { dupWon++; return { kind: "ok", row: { ...dup }, via: "dup" }; }
+      const cached = cacheGet(job.url);
+      if (cached && isGoodRow(cached)) {
+        cacheWon++; memRows.set(job.url, { ...cached });
+        return { kind: "ok", row: { ...cached }, via: "cached" };
+      }
       if (turbo) {
         const pre = preRows.get(agentIdFromUrl(job.url));
-        if (pre && isGoodRow(pre)) { listWon++; return { kind: "ok", row: { ...pre }, via: "list" }; }
+        if (pre && isGoodRow(pre)) { listWon++; keep(job.url, pre); return { kind: "ok", row: { ...pre }, via: "list" }; }
       }
       if (turbo && !turboOff) {
         turboTried++;
+        await paceWait();
         const res = await turboFetchProfile(job.url);
         if (res.blocked) return { kind: "blocked" };
-        if (res.row && isGoodRow(res.row)) { turboWon++; return { kind: "ok", row: res.row, via: "turbo" }; }
+        if (res.row && isGoodRow(res.row)) { turboWon++; keep(job.url, res.row); return { kind: "ok", row: res.row, via: "turbo" }; }
         // fetch worked but data was thin -> fall through to a Classic render.
       }
-      return await readClassic(job);
+      await paceWait();
+      const rc = await readClassic(job);
+      if (rc.kind === "ok" && isGoodRow(rc.row)) keep(job.url, rc.row);
+      return rc;
     }
 
-    // Keep concurrency modest and pace proactively (below): realtor rate-limits
-    // how many requests a session makes in a short window, so we ride just under
-    // that limit instead of bursting into it and eating the long recovery pauses.
-    let target = 2;                     // live concurrency, AIMD between 1 and MAX_T
-    const MAX_T = turbo ? 4 : 5, MIN_T = 1;
-    // Proactive self-pacing: never START more than PACE_MAX real network requests
-    // in any rolling PACE_WINDOW. Rows already harvested from the results page make
-    // no request and are NOT paced. The AIMD backoff further below still catches
-    // any throttle that slips past this - nothing is ever lost either way.
-    const reqTimes = [];
-    const PACE_WINDOW = 20000, PACE_MAX = turbo ? 12 : 10;
-    const paceOk = () => {
-      const now = Date.now();
-      while (reqTimes.length && now - reqTimes[0] > PACE_WINDOW) reqTimes.shift();
-      return reqTimes.length < PACE_MAX;
-    };
-    const MAX_THROTTLE_TRIES = 15;      // generous; the session almost always recovers first
-    let inFlight = 0, done = 0, sinceGood = 0, throttleStreak = 0;
-    let cooldownUntil = 0, lastNote = 0;
+    // Concurrency stays modest; the token bucket above is what actually meters
+    // the network, so there is no separate cooldown to sit through.
+    let target = 2;                     // live concurrency between MIN_T and MAX_T
+    const MAX_T = turbo ? 3 : 5, MIN_T = 1;
+    const MAX_THROTTLE_TRIES = 40;      // generous; each retry is cheap and paced
+    let inFlight = 0, done = 0, sinceGood = 0, throttleStreak = 0, lastNote = 0;
 
     await new Promise((resolve) => {
       const launch = () => {
         if (done >= total) { resolve(); return; }
-        const now = Date.now();
-        if (now < cooldownUntil) { setTimeout(launch, cooldownUntil - now + 20); return; }
-        while (inFlight < target && queue.length > 0 && Date.now() >= cooldownUntil) {
-          const job = queue[0];
-          const pre = turbo ? preRows.get(agentIdFromUrl(job.url)) : null;
-          const isListHit = !!(pre && isGoodRow(pre));   // served from memory, no request
-          if (!isListHit && !paceOk()) { setTimeout(launch, 500); return; }  // stay under the limit
-          if (!isListHit) reqTimes.push(Date.now());
+        while (inFlight < target && queue.length > 0) {
           inFlight++;
           run(queue.shift());
         }
@@ -631,27 +739,27 @@ function scrapeZips(zips, maxPages, turbo) {
       const run = async (job) => {
         try {
           const res = await acquireRow(job);
-          if (res.kind === "blocked") {                         // realtor is throttling
+          if (res.kind === "blocked") {                         // realtor pushed back
             job.tries++;
             throttleStreak++; sinceGood = 0;
-            target = Math.max(MIN_T, Math.floor(target / 2));   // multiplicative decrease
-            const backoff = Math.min(30000, 3000 * Math.pow(1.6, Math.min(throttleStreak, 6)));
-            cooldownUntil = Math.max(cooldownUntil, Date.now() + backoff);
+            paceThrottled();                                    // ease the global trickle
+            target = Math.max(MIN_T, Math.floor(target / 2));   // fewer at once for a bit
             if (job.tries <= MAX_THROTTLE_TRIES) queue.push(job);   // requeue - never dropped
             else { rows[job.i] = null; done++; }                    // extreme, very rare
             if (Date.now() > lastNote) {
-              log(`  ${zip}: realtor throttling - pausing ${Math.round(backoff / 1000)}s & slowing down` +
-                  (throttleStreak >= 8 ? " (tip: click around realtor.com in this tab to help clear it)" : "") +
-                  ` - nothing lost, ${total - done} to go`);
-              lastNote = Date.now() + 3000;
+              log(`  ${zip}: realtor pushed back - eased to ${Math.round(paceEvery / 1000)}s/request` +
+                  (throttleStreak >= 12 ? " (tip: click around realtor.com in this tab to help clear it)" : "") +
+                  ` - still going, nothing lost, ${total - done} to go`);
+              lastNote = Date.now() + 4000;
             }
           } else if (res.kind === "ok") {                       // got the real profile
             const row = res.row;
             row.search_zip = zip;
             rows[job.i] = row; done++;
             throttleStreak = 0; sinceGood++;
+            if (res.via === "turbo" || res.via === "classic") paceSuccess();  // network reads only
             if (sinceGood >= 5 && target < MAX_T) { target++; sinceGood = 0; }  // additive increase
-            const tag = res.via === "turbo" ? " (turbo)" : res.via === "list" ? " (from list)" : "";
+            const tag = { turbo: " (turbo)", list: " (from list)", cached: " (cached)", dup: " (dup)" }[res.via] || "";
             log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"}${tag}`);
           } else {                                              // not blocked, no data (dead/slow)
             job.dead++;
@@ -671,12 +779,12 @@ function scrapeZips(zips, maxPages, turbo) {
           if (job.dead < 4) queue.push(job); else { rows[job.i] = null; done++; }
         } finally {
           inFlight--;
-          const wait = Math.max(0, cooldownUntil - Date.now());
-          setTimeout(launch, wait > 0 ? wait + 20 : 45 + Math.random() * 75);
+          setTimeout(launch, 30);          // rate is set by the token bucket, not here
         }
       };
       launch();
     });
+    flushCache();                         // persist finished agents for future runs
     return rows.filter(Boolean);          // keep listing order; only truly-dead links drop
   }
 
@@ -704,12 +812,16 @@ function scrapeZips(zips, maxPages, turbo) {
       }
 
       log(`ALL DONE. ${allRows.length} agents across ${zips.length} ZIP(s). Check your Downloads folder.`);
-      if (turbo && (listWon > 0 || turboTried > 0)) {
+      const saved = cacheWon + dupWon + listWon;
+      if (saved > 0 || turboTried > 0) {
         const bits = [];
-        if (listWon > 0) bits.push(`${listWon} straight from results pages (no profile visit)`);
-        if (turboWon > 0) bits.push(`${turboWon} via fast profile fetch`);
-        if (turboTried - turboWon > 0) bits.push(`${turboTried - turboWon} via Classic fallback`);
-        log("Turbo summary: " + bits.join(", ") + ".");
+        if (cacheWon > 0) bits.push(`${cacheWon} from cache (an earlier run)`);
+        if (dupWon > 0) bits.push(`${dupWon} repeat agents across ZIPs`);
+        if (listWon > 0) bits.push(`${listWon} from results pages`);
+        if (turboWon > 0) bits.push(`${turboWon} fast profile fetch`);
+        if (turboTried - turboWon > 0) bits.push(`${turboTried - turboWon} classic fallback`);
+        if (bits.length) log("How agents were read: " + bits.join(", ") + ".");
+        if (saved > 0) log(`Skipped ${saved} realtor request(s) via cache/dedup/results-pages - that much less throttling.`);
       }
       if (zeroZips.length > 0) {
         log(`NOTE: ${zeroZips.length} ZIP(s) returned 0 agents (likely a block). Re-run just these:`);
