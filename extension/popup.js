@@ -228,15 +228,19 @@ function scrapeZips(zips, maxPages) {
       await sleep(150);
     }
 
-    // Scrape profiles as fast as realtor.com allows WITHOUT losing quality.
-    // Several load in parallel, but the pool AUTO-throttles the instant realtor
-    // rate-limits (its "This is taking longer than usual" page). A throttled
-    // page is NEVER saved as a row - it's retried after a cooldown, so no agent
-    // is lost. Concurrency ramps up when smooth and eases off when throttled, so
-    // it rides at the fastest rate realtor tolerates. rows[] is indexed by
-    // position, so the CSV keeps the original listing order.
+    // Scrape profiles fast AND complete. realtor.com rate-limits a session that
+    // requests too quickly (its "taking longer than usual" page), and hammering
+    // it with fast retries keeps it throttled. So we ride just under the limit
+    // and never drop anyone:
+    //  - a throttled agent is REQUEUED and retried later, never saved or skipped;
+    //  - on a throttle we cut concurrency hard and pause (exponential backoff),
+    //    then ramp back up slowly (AIMD, like TCP) so we don't re-trigger it;
+    //  - if the session gets stuck, we pause longer and suggest clicking around
+    //    realtor.com in the tab to clear it - still nothing lost.
+    // rows[] is indexed by position, so the CSV keeps the original listing order.
     const total = profileUrls.length;
     const rows = new Array(total);
+    const queue = profileUrls.map((url, i) => ({ url, i, tries: 0, dead: 0 }));
     const isReady = (d) =>
       d.querySelector("h1") &&
       [...d.querySelectorAll("h1,h2,h3,h4")].some(
@@ -246,57 +250,63 @@ function scrapeZips(zips, maxPages) {
     // throttled page is caught instantly instead of waiting the full timeout.
     const readyOrBlocked = (d) => isReady(d) || isBlocked(d);
 
-    let next = 0, finished = 0, inFlight = 0;
-    let target = 4;                       // live concurrency (auto-adjusts 1..8)
-    const MAX_T = 8, MIN_T = 1;
-    let streak = 0;                       // consecutive clean loads
-    let cooldownUntil = 0;                // global pause while throttled
-    let throttleNoteAt = 0;               // rate-limit the "throttling" log line
+    let target = 2;                     // live concurrency, AIMD between 1 and 5
+    const MAX_T = 5, MIN_T = 1;
+    const MAX_THROTTLE_TRIES = 15;      // generous; the session almost always recovers first
+    let inFlight = 0, done = 0, sinceGood = 0, throttleStreak = 0;
+    let cooldownUntil = 0, lastNote = 0;
 
     await new Promise((resolve) => {
-      const pump = () => {
-        while (inFlight < target && next < total) { inFlight++; run(next++); }
-        if (finished >= total) resolve();
+      const launch = () => {
+        if (done >= total) { resolve(); return; }
+        const now = Date.now();
+        if (now < cooldownUntil) { setTimeout(launch, cooldownUntil - now + 20); return; }
+        while (inFlight < target && queue.length > 0 && Date.now() >= cooldownUntil) {
+          inFlight++;
+          run(queue.shift());
+        }
       };
-      const run = async (i) => {
-        const url = profileUrls[i];
-        let row = null;
+      const run = async (job) => {
         try {
-          for (let attempt = 1; attempt <= 6; attempt++) {
-            const wait = cooldownUntil - Date.now();
-            if (wait > 0) await sleep(wait);
-            const doc = await loadInFrame(url, readyOrBlocked, 12000);
-            if (doc && isBlocked(doc)) {                    // realtor is throttling
-              streak = 0;
-              target = Math.max(MIN_T, target - 1);         // ease the whole pool
-              cooldownUntil = Math.max(cooldownUntil, Date.now() + Math.min(20000, 3000 * attempt));
-              if (Date.now() > throttleNoteAt) {
-                log(`  ${zip}: realtor is throttling - easing off & retrying (no data lost)`);
-                throttleNoteAt = Date.now() + 4000;
-              }
-              await sleep(400 + Math.random() * 600);
-              continue;                                     // retry this same agent
+          const doc = await loadInFrame(job.url, readyOrBlocked, 12000);
+          if (doc && isBlocked(doc)) {                          // realtor is throttling
+            job.tries++;
+            throttleStreak++; sinceGood = 0;
+            target = Math.max(MIN_T, Math.floor(target / 2));   // multiplicative decrease
+            const backoff = Math.min(30000, 3000 * Math.pow(1.6, Math.min(throttleStreak, 6)));
+            cooldownUntil = Math.max(cooldownUntil, Date.now() + backoff);
+            if (job.tries <= MAX_THROTTLE_TRIES) queue.push(job);   // requeue - never dropped
+            else { rows[job.i] = null; done++; }                    // extreme, very rare
+            if (Date.now() > lastNote) {
+              log(`  ${zip}: realtor throttling - pausing ${Math.round(backoff / 1000)}s & slowing down` +
+                  (throttleStreak >= 8 ? " (tip: click around realtor.com in this tab to help clear it)" : "") +
+                  ` - nothing lost, ${total - done} to go`);
+              lastNote = Date.now() + 3000;
             }
-            if (doc && doc.querySelector("h1")) {           // got the profile
-              row = parseProfile(doc, url);
-              row.search_zip = zip;
-              streak++;
-              if (streak >= 6 && target < MAX_T) { target++; streak = 0; }  // speed back up
-              break;
-            }
-            await sleep(500);                               // not ready yet; brief retry
+          } else if (doc && doc.querySelector("h1")) {          // got the real profile
+            const row = parseProfile(doc, job.url);
+            row.search_zip = zip;
+            rows[job.i] = row; done++;
+            throttleStreak = 0; sinceGood++;
+            if (sinceGood >= 5 && target < MAX_T) { target++; sinceGood = 0; }  // additive increase
+            log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"}`);
+          } else {                                              // not blocked, no data (dead/slow)
+            job.dead++;
+            if (job.dead < 4) queue.push(job);
+            else { rows[job.i] = null; done++; log(`  ${zip}: [${done}/${total}] unreadable, skipped`); }
           }
-        } catch (e) { /* leave row null; never let one bad profile stall the pool */ }
-        rows[i] = row;
-        finished++;
-        inFlight--;
-        log(`  ${zip}: [${finished}/${total}] ${row ? (row.name || "(no name)") : "unreadable after retries, skipped"}`);
-        await sleep(60 + Math.random() * 100);
-        pump();
+        } catch (e) {
+          job.dead++;
+          if (job.dead < 4) queue.push(job); else { rows[job.i] = null; done++; }
+        } finally {
+          inFlight--;
+          const wait = Math.max(0, cooldownUntil - Date.now());
+          setTimeout(launch, wait > 0 ? wait + 20 : 45 + Math.random() * 75);
+        }
       };
-      pump();
+      launch();
     });
-    return rows.filter(Boolean);          // drop failed slots, keep listing order
+    return rows.filter(Boolean);          // keep listing order; only truly-dead links drop
   }
 
   (async () => {
