@@ -151,6 +151,32 @@ function scrapeZips(zips, maxPages, turbo) {
     return out;
   };
 
+  // Map each agent profile URL -> the name shown on the results page (the link
+  // text). Used to match a results-page agent to their record in the page JSON,
+  // the same way the profile <h1> name is matched - realtor's URL id doesn't
+  // always line up with the id inside the JSON, but the name does.
+  const agentNamesFromDoc = (doc) => {
+    const map = new Map();
+    const anchors = doc ? doc.querySelectorAll('a[href*="/realestateagents/"]') : [];
+    anchors.forEach((a) => {
+      const href = a.getAttribute("href") || "";
+      let abs;
+      try { abs = new URL(href, location.origin).href; } catch (e) { return; }
+      const m = abs.match(/\/realestateagents\/([^/?#]+)/);
+      if (!m) return;
+      const seg = m[1];
+      if (/^\d{5}$/.test(seg) || /^(intent-|sort-|agenttype-|pg-)/.test(seg)) return;
+      if (!(/^[0-9a-f]{24}$/.test(seg) || (seg.includes("_") && /\d{3,}/.test(seg)))) return;
+      const purl = location.origin + "/realestateagents/" + seg;
+      const txt = clean(a.textContent);
+      if (txt && /[a-z]/i.test(txt) && txt.length <= 60) {
+        const prev = map.get(purl) || "";
+        if (txt.length > prev.length) map.set(purl, txt);   // keep the fullest name text
+      }
+    });
+    return map;
+  };
+
   // realtor's block / rate-limit pages, detected from page text OR raw HTML.
   function isBlockedText(t) {
     t = (t || "").toLowerCase();
@@ -317,19 +343,21 @@ function scrapeZips(zips, maxPages, turbo) {
   // from the page's own JSON, keyed by the agent id in their profile URL - so we
   // can skip visiting those profiles entirely. Each phone stays with its own
   // agent (matched by that agent's unique id).
-  function harvestListingRows(doc, profileUrls) {
+  function harvestListingRows(doc, profileUrls, urlNames) {
     const out = new Map();
     const blobs = parseJsonBlobs(doc);
     if (blobs.length === 0) return out;
     for (const url of profileUrls) {
       const id = agentIdFromUrl(url);
-      if (!id || out.has(id)) continue;
-      const a = collectAgentFromBlobs(blobs, "", id);
+      const key = id || url;
+      if (out.has(key)) continue;
+      const listedName = (urlNames && urlNames.get(url)) || "";
+      const a = collectAgentFromBlobs(blobs, normName(listedName), id);
       if (a.phones.length) {
-        out.set(id, {
+        out.set(key, {
           search_zip: "",
-          name: a.name,
-          name_section: a.name,
+          name: a.name || clean(listedName),
+          name_section: a.name || clean(listedName),
           contact_information: clean(a.contactBits.join(" | ")),
           phones: a.phones.join("; "),
           website_links: a.links.join("; "),
@@ -338,6 +366,19 @@ function scrapeZips(zips, maxPages, turbo) {
       }
     }
     return out;
+  }
+  // Quick one-time read of whether a results page's JSON even carries phone
+  // numbers - so if the harvest comes up empty we can tell "no phones in the
+  // list" apart from "phones there but not matched".
+  function listingPhoneSignal(doc) {
+    const blobs = parseJsonBlobs(doc);
+    if (blobs.length === 0) return { blobs: 0, phones: 0 };
+    let text = "";
+    try { text = blobs.map((b) => JSON.stringify(b)).join(" "); } catch (e) {}
+    // Count phone-shaped values in the JSON: formatted "(ddd) ddd-dddd" /
+    // "ddd-ddd-dddd", and quoted bare 10-digit strings (realtor's common form).
+    const phones = (text.match(/\(\d{3}\)\s?\d{3}-\d{4}|\b\d{3}[-.]\d{3}[-.]\d{4}\b|"\d{10}"/g) || []).length;
+    return { blobs: blobs.length, phones };
   }
 
   // ---- Turbo reader: parse the SAME fields straight from the HTML source. ----
@@ -466,8 +507,12 @@ function scrapeZips(zips, maxPages, turbo) {
     const profileUrls = [];
     const seen = new Set();
     // Rows we manage to read straight from a results page's own JSON, keyed by
-    // agent id. When Turbo is on we try this first and skip that profile visit.
+    // agent id/url. When Turbo is on we try this first and skip that profile
+    // visit. urlNames maps each profile URL -> the name shown on the results page
+    // (used to match the agent to their record in the page JSON).
     const preRows = new Map();
+    const urlNames = new Map();
+    let diagShown = false;
     for (let page = 1; page <= pageCap; page++) {
       const url = base + "/pg-" + page;
       const { doc, blocked } = await loadListingPage(url, zip, page);
@@ -479,8 +524,17 @@ function scrapeZips(zips, maxPages, turbo) {
       let added = 0;
       for (const u of pageUrls) if (!seen.has(u)) { seen.add(u); profileUrls.push(u); added++; }
       if (turbo && doc) {
-        try { harvestListingRows(doc, pageUrls).forEach((v, k) => { if (!preRows.has(k)) preRows.set(k, v); }); }
-        catch (e) {}
+        agentNamesFromDoc(doc).forEach((v, k) => { if (!urlNames.has(k)) urlNames.set(k, v); });
+        try {
+          const before = preRows.size;
+          harvestListingRows(doc, pageUrls, urlNames).forEach((v, k) => { if (!preRows.has(k)) preRows.set(k, v); });
+          if (!diagShown && preRows.size === before && pageUrls.length > 0) {
+            const sig = listingPhoneSignal(doc);   // why did the harvest find nothing?
+            log(`  ${zip}: [turbo] results page had 0 usable rows` +
+                ` (json blocks=${sig.blobs}, phone-shaped values in them~=${sig.phones}).`);
+            diagShown = true;
+          }
+        } catch (e) {}
       }
       log(`  ${zip}: page ${page} -> +${added} (total ${profileUrls.length})`);
       if (added === 0) break;
