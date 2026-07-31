@@ -1,4 +1,6 @@
 name: Scrape Realtor Agents (API - cloud, no proxy)
+# Clear per-run title so it never gets confused with the EXE build or the old proxy job.
+run-name: "📥 Scrape agents — ${{ inputs.zips || 'ZIPs from cloud-api/zips.txt' }}"
 
 # Runs the API scraper on GitHub's servers - no PC, no browser, no proxy.
 # It hits realtor.com's own GraphQL API directly (confirmed reachable from a
