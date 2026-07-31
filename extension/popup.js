@@ -240,13 +240,21 @@ function scrapeZips(zips, maxPages, turbo) {
 
   function rowFromBranding(b, zip, url) {
     const phones = [], links = [], contactBits = [];
+    // phones column = the AGENT'S OWN listed number(s) only. Left blank if realtor
+    // lists none - we do NOT substitute the brokerage's office line (that would be
+    // the same shared number for every agent at that office, not really theirs).
     (b.phones || []).forEach((p) => p && p.value && phones.push(clean(p.value)));
-    if (b.office && Array.isArray(b.office.phones)) b.office.phones.forEach((p) => p && p.value && phones.push(clean(p.value)));
+    const own = new Set(phones.map((p) => p.replace(/\D/g, "")));
     if (b.broker && b.broker.name) contactBits.push(clean(b.broker.name));
     if (b.office && b.office.name) contactBits.push(clean(b.office.name));
     if (b.office && b.office.address) { const a = b.office.address;
       [a.address_formatted_line_1, a.address_formatted_line_2, a.city, a.state_code, a.postal_code].forEach((x) => x && contactBits.push(clean(String(x)))); }
     if (b.license_state && b.license_number) contactBits.push("License " + b.license_state + " " + b.license_number);
+    // The office/brokerage phone is real, useful data - but it belongs in the
+    // contact-info column, clearly labeled, NOT masquerading as the agent's number.
+    if (b.office && Array.isArray(b.office.phones)) b.office.phones.forEach((p) => {
+      if (p && p.value && !own.has(clean(p.value).replace(/\D/g, ""))) contactBits.push("Office ph: " + clean(p.value));
+    });
     if (b.website && /^https?:/.test(b.website)) links.push(b.website);
     if (b.broker && b.broker.website && /^https?:/.test(b.broker.website)) links.push(b.broker.website);
     return {
@@ -254,7 +262,7 @@ function scrapeZips(zips, maxPages, turbo) {
       name: clean(b.fullname),
       name_section: clean(b.fullname),
       contact_information: clean([...new Set(contactBits)].join(" | ")),
-      phones: [...new Set(phones)].join("; "),
+      phones: [...new Set(phones)].join("; "),   // agent's own numbers only; may be blank
       website_links: [...new Set(links)].join("; "),
       profile_url: url,
     };
@@ -271,15 +279,18 @@ function scrapeZips(zips, maxPages, turbo) {
     const rows = new Array(total);
     let done = 0;
     const pending = [];
+    // The API is authoritative, so a row is "done" once it has a NAME - a blank
+    // phone is a real answer (that agent lists none), not a reason to re-fetch.
+    const apiDone = (r) => !!(r && r.name);
     agents.forEach((a, i) => {
       const url = location.origin + "/realestateagents/" + a.id;
       let hit = memRows.get(url), via = "dup";
-      if (!(hit && isGoodRow(hit))) { hit = cacheGet(url); via = "cached"; }
-      if (hit && isGoodRow(hit)) {
+      if (!apiDone(hit)) { hit = cacheGet(url); via = "cached"; }
+      if (apiDone(hit)) {
         const row = { ...hit, search_zip: zip };
         rows[i] = row; memRows.set(url, row); done++;
         if (via === "dup") dupWon++; else cacheWon++;
-        log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"} (${via})`);
+        log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"}${row.phones ? "" : " (no phone)"} (${via})`);
       } else pending.push({ a, i, url });
     });
     const BATCH = 8;
@@ -289,11 +300,21 @@ function scrapeZips(zips, maxPages, turbo) {
       if (res.blocked) break;                          // rest/burn handled inside; stop this ZIP
       for (const c of chunk) {
         const b = res.profiles[c.a.id];
-        const row = b ? rowFromBranding(b, zip, c.url) : null;
         done++;
-        if (row && isGoodRow(row)) { keep(c.url, row); rows[c.i] = row; apiWon++;
-          log(`  ${zip}: [${done}/${total}] ${row.name} (api)`); }
-        else { log(`  ${zip}: [${done}/${total}] ${c.a.fullname || "(no name)"} - no phone listed`); }
+        let row = b ? rowFromBranding(b, zip, c.url) : null;
+        if (row && !row.name) row.name = clean(c.a.fullname);
+        if (row && row.name) {                         // keep every agent, phone or not
+          keep(c.url, row); rows[c.i] = row; apiWon++;
+          log(`  ${zip}: [${done}/${total}] ${row.name}${row.phones ? "" : " (no phone listed)"} (api)`);
+        } else {                                       // profile unavailable -> use the list data we have
+          const name = clean(c.a.fullname);
+          if (name) {
+            rows[c.i] = { search_zip: zip, name, name_section: name,
+              contact_information: clean([c.a.broker && c.a.broker.name, c.a.office && c.a.office.name].filter(Boolean).join(" | ")),
+              phones: "", website_links: "", profile_url: c.url };
+            log(`  ${zip}: [${done}/${total}] ${name} (listed; profile n/a)`);
+          } else log(`  ${zip}: [${done}/${total}] (unreadable, skipped)`);
+        }
       }
     }
     flushCache();
