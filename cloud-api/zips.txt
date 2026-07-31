@@ -1,0 +1,4 @@
+# One ZIP code per line. Edit this file and commit to trigger a cloud run,
+# or use the "Run workflow" button in the Actions tab and paste ZIPs there.
+# Lines starting with # are ignored.
+97883

@@ -1,0 +1,67 @@
+name: Scrape Realtor Agents (API - cloud, no proxy)
+
+# Runs the API scraper on GitHub's servers - no PC, no browser, no proxy.
+# It hits realtor.com's own GraphQL API directly (confirmed reachable from a
+# datacenter IP), so it just works from here.
+#
+# Three ways to start it:
+#   1) Actions tab -> this workflow -> "Run workflow" -> paste ZIPs.
+#   2) Edit cloud-api/zips.txt and commit -> it auto-runs.
+#   3) On a schedule (uncomment the "schedule" block below).
+#
+# Output: download the CSVs from the run's "Artifacts" section when it finishes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      zips:
+        description: "ZIP codes (comma / space / newline separated). Blank = use cloud-api/zips.txt"
+        required: false
+        default: ""
+  push:
+    branches: ["**"]
+    paths:
+      - "cloud-api/zips.txt"
+  # Recurring runs (PC off). Uncomment and adjust. Example: Mondays 13:00 UTC.
+  # schedule:
+  #   - cron: "0 13 * * 1"
+
+concurrency:
+  group: scrape-agents
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Reuse the 7-day agent cache across runs so repeats are cheap and gentle.
+      - name: Restore agent cache
+        uses: actions/cache@v4
+        with:
+          path: cloud-api/.agent_cache.json
+          key: agent-cache-${{ github.run_id }}
+          restore-keys: |
+            agent-cache-
+
+      - name: Run scraper
+        env:
+          ZIPS: ${{ github.event.inputs.zips }}
+          OUTPUT_DIR: cloud-api/output
+          CACHE_FILE: cloud-api/.agent_cache.json
+        run: node cloud-api/scraper.js
+
+      - name: Upload CSVs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realtor-agent-csvs
+          path: cloud-api/output/*.csv
+          if-no-files-found: warn
+          retention-days: 30
