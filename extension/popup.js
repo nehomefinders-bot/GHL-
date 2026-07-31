@@ -80,22 +80,118 @@ function scrapeZips(zips, maxPages, turbo) {
   let turboTried = 0, turboWon = 0, turboHintShown = false, turboOff = false;
   let listWon = 0, cacheWon = 0, dupWon = 0, apiWon = 0;
 
-  let panel = document.getElementById("__ra_scraper_panel");
-  if (!panel) {
-    panel = document.createElement("div");
-    panel.id = "__ra_scraper_panel";
-    panel.style.cssText =
-      "position:fixed;top:12px;right:12px;z-index:2147483647;width:340px;" +
-      "max-height:80vh;overflow:auto;background:#111;color:#0f0;font:12px/1.5 " +
-      "Consolas,monospace;padding:12px;border-radius:8px;box-shadow:0 4px 18px " +
-      "rgba(0,0,0,.5);white-space:pre-wrap;";
-    document.body.appendChild(panel);
-  }
+  // ---- UI: a clean, light status card (in a Shadow DOM so realtor's CSS can't
+  // touch it and ours can't leak). Shows live progress, a feed of agents as they
+  // come in, and Pause/Resume + Stop controls. This is purely presentational -
+  // the scraping engine below is unchanged. Pause simply holds new requests at
+  // the pacer; Stop uses the same clean-exit path as a finished run (progress is
+  // saved and the CSVs download).
+  let paused = false, userStopped = false, currentZip = "", panelDone = 0, panelTotal = 0;
+  const oldHost = document.getElementById("__ra_scraper_host");
+  if (oldHost) oldHost.remove();
+  const host = document.createElement("div");
+  host.id = "__ra_scraper_host";
+  host.style.cssText = "position:fixed;top:16px;right:16px;z-index:2147483647;";
+  document.body.appendChild(host);
+  const root = host.attachShadow({ mode: "open" });
+  root.innerHTML =
+    '<style>' +
+    ':host,*{box-sizing:border-box;}' +
+    '.panel{width:344px;max-height:82vh;display:flex;flex-direction:column;background:#fff;color:#1f2937;' +
+      'border:1px solid #e5e7eb;border-radius:14px;box-shadow:0 14px 40px rgba(15,23,42,.20);overflow:hidden;' +
+      'font-family:"Segoe UI",system-ui,-apple-system,Arial,sans-serif;font-size:13px;}' +
+    '.hdr{display:flex;align-items:center;gap:9px;padding:12px 14px;background:linear-gradient(135deg,#c8202b,#9c1a22);color:#fff;}' +
+    '.dot{width:9px;height:9px;border-radius:50%;background:#34d399;flex:none;animation:pulse 1.6s infinite;}' +
+    '.paused .dot{background:#fbbf24;animation:none;}.done .dot{background:#38bdf8;animation:none;}' +
+    '@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.55);}70%{box-shadow:0 0 0 7px rgba(52,211,153,0);}100%{box-shadow:0 0 0 0 rgba(52,211,153,0);}}' +
+    '.ttl{font-weight:700;font-size:13px;flex:1;letter-spacing:.2px;}' +
+    '.prog{padding:12px 14px 9px;}' +
+    '.bar{height:7px;border-radius:20px;background:#eef2f7;overflow:hidden;}' +
+    '.fill{height:100%;width:0%;border-radius:20px;background:linear-gradient(90deg,#c8202b,#ef4444);transition:width .25s ease;}' +
+    '.ptxt{margin-top:8px;font-size:12px;color:#6b7280;display:flex;justify-content:space-between;}' +
+    '.ptxt b{color:#111827;}' +
+    '.feed{flex:1;overflow-y:auto;padding:4px 8px;min-height:132px;border-top:1px solid #f1f5f9;}' +
+    '.row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;}' +
+    '.row:nth-child(odd){background:#fafbfc;}' +
+    '.nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827;}' +
+    '.badge{font-size:10px;font-weight:600;padding:2px 8px;border-radius:20px;flex:none;}' +
+    '.b-api{background:#e0f2fe;color:#0369a1;}.b-cache{background:#ede9fe;color:#6d28d9;}' +
+    '.b-none{background:#fef3c7;color:#92400e;}.b-ok{background:#dcfce7;color:#166534;}' +
+    '.status{padding:9px 14px;font-size:11.5px;color:#6b7280;border-top:1px solid #f1f5f9;min-height:34px;line-height:1.4;}' +
+    '.status.warn{color:#b45309;}.status.good{color:#15803d;}' +
+    '.foot{display:flex;gap:8px;padding:10px 12px;border-top:1px solid #f1f5f9;background:#fbfcfe;}' +
+    'button{flex:1;border:0;border-radius:9px;padding:9px 10px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;}' +
+    '.btn-pause{background:#eef2f7;color:#374151;}.btn-pause:hover{background:#e2e8f0;}' +
+    '.btn-stop{background:#fee2e2;color:#b91c1c;}.btn-stop:hover{background:#fecaca;}' +
+    'button:disabled{opacity:.5;cursor:default;}' +
+    '</style>' +
+    '<div class="panel running">' +
+    '<div class="hdr"><span class="dot"></span><span class="ttl">Realtor Agent Scraper</span></div>' +
+    '<div class="prog"><div class="bar"><div class="fill"></div></div>' +
+    '<div class="ptxt"><span class="pzip">Starting…</span><span class="pcnt"></span></div></div>' +
+    '<div class="feed"></div>' +
+    '<div class="status">Preparing…</div>' +
+    '<div class="foot"><button class="btn-pause">⏸ Pause</button><button class="btn-stop">⏹ Stop</button></div>' +
+    '</div>';
+  const $ = (s) => root.querySelector(s);
+  const elPanel = $(".panel"), elFill = $(".fill"), elZip = $(".pzip"), elCnt = $(".pcnt"),
+        elFeed = $(".feed"), elStatus = $(".status"), elPause = $(".btn-pause"), elStop = $(".btn-stop");
+
+  const setStatus = (m, cls) => { elStatus.textContent = m; elStatus.className = "status" + (cls ? " " + cls : ""); };
+  const renderProg = () => {
+    const pct = panelTotal ? Math.min(100, Math.round(panelDone / panelTotal * 100)) : 0;
+    elFill.style.width = pct + "%";
+    elZip.textContent = currentZip ? "ZIP " + currentZip : "Working…";
+    elCnt.textContent = panelTotal ? panelDone + " / " + panelTotal : "";
+  };
+  const addRow = (name, m) => {
+    let txt = "done", cls = "b-ok";
+    if (/no phone/i.test(m)) { txt = "no phone"; cls = "b-none"; }
+    else if (/\(cached\)|\(dup\)/i.test(m)) { txt = "saved"; cls = "b-cache"; }
+    else if (/\(api\)/i.test(m)) { txt = "api"; cls = "b-api"; }
+    const row = document.createElement("div"); row.className = "row";
+    const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = name;
+    const bd = document.createElement("span"); bd.className = "badge " + cls; bd.textContent = txt;
+    row.appendChild(nm); row.appendChild(bd); elFeed.appendChild(row);
+    while (elFeed.childNodes.length > 60) elFeed.removeChild(elFeed.firstChild);
+    elFeed.scrollTop = elFeed.scrollHeight;
+  };
+  const finishUI = () => {
+    elPanel.className = "panel done"; elPause.disabled = true;
+    elStop.disabled = false; elStop.textContent = "✕ Close"; elStop.onclick = () => host.remove();
+  };
+
   const lines = [];
   const log = (m) => {
     lines.push(m);
-    panel.textContent = lines.slice(-300).join("\n");
-    panel.scrollTop = panel.scrollHeight;
+    const am = m.match(/\[(\d+)\/(\d+)\]\s*(.+)$/);        // "33021: [1980/2395] Name (api)"
+    if (am) {
+      panelDone = +am[1]; panelTotal = +am[2];
+      const name = am[3].replace(/\s*\((api|cached|dup|turbo|from list|classic|listed[^)]*|no phone[^)]*|profile n\/a)\)\s*/gi, " ").trim();
+      addRow(name || "(no name)", m); renderProg(); return;
+    }
+    const zm = m.match(/=== ZIP (\d{5}) \((\d+)\/(\d+)\)/);
+    if (zm) { currentZip = zm[1]; panelDone = 0; panelTotal = 0; renderProg();
+      setStatus("Scraping ZIP " + zm[1] + "  (" + zm[2] + " of " + zm[3] + ")"); return; }
+    const lm = m.match(/listed (\d+)(?:\/(\d+))? agents/);
+    if (lm) { panelTotal = +(lm[2] || lm[1]); renderProg(); }
+    let cls = "";
+    if (/throttl|blocked|rest|pushed back|pausing|unavailable/i.test(m)) cls = "warn";
+    else if (/ALL DONE|saved|Combined|Skipped|complete|read straight/i.test(m)) cls = "good";
+    setStatus(m.replace(/^\s*=+\s*/, "").replace(/\s*=+\s*$/, "").trim(), cls);
+    if (/ALL DONE/i.test(m)) finishUI();
+  };
+
+  elPause.onclick = () => {
+    paused = !paused;
+    elPause.textContent = paused ? "▶ Resume" : "⏸ Pause";
+    elPanel.className = "panel " + (paused ? "paused" : "running");
+    if (paused) setStatus("Paused — click Resume to continue.", "warn");
+  };
+  elStop.onclick = () => {
+    userStopped = true; burnedStop = true; paused = false;
+    elPause.disabled = true; elStop.disabled = true; elPanel.className = "panel done";
+    setStatus("Stopping… saving everything scraped so far.", "");
   };
 
   // ---- Global request pacing (whole run, every ZIP). realtor's bot-guard is
@@ -121,7 +217,11 @@ function scrapeZips(zips, maxPages, turbo) {
     return Math.max(20, Math.round((paceEvery - (now - lastToken)) * jitter()));
   };
   const paceWait = async () => {           // wait for our turn to hit the network
-    for (;;) { const w = takeToken(); if (w <= 0) return; await sleep(Math.min(w, 2000)); }
+    for (;;) {
+      while (paused && !burnedStop) await sleep(250);   // Pause holds every request here
+      if (burnedStop) return;                            // Stop -> callers see burnedStop and exit
+      const w = takeToken(); if (w <= 0) return; await sleep(Math.min(w, 2000));
+    }
   };
   const paceThrottled = () => {            // got blocked: ease off (multiplicative increase)
     tokens = 0; tokenCap = 2; cleanRun = 0;
@@ -1016,7 +1116,11 @@ function scrapeZips(zips, maxPages, turbo) {
         if (burnedStop) { stoppedEarly = true; break; }   // session flagged - stop cleanly
         await sleep(800);
       }
-      if (stoppedEarly) {
+      if (stoppedEarly && userStopped) {
+        log(`STOPPED by you. Saved ${allRows.length} agent(s) so far.`);
+        log("Re-run the SAME ZIP list any time to continue - finished agents replay instantly");
+        log("from the 7-day cache, so it picks up right where it left off.");
+      } else if (stoppedEarly) {
         log(`STOPPED EARLY: realtor blocked the session. Saved ${allRows.length} agent(s) so far.`);
         log("To finish: browse realtor.com in this tab for ~1 min (open a couple of agents) to clear");
         log("the block, then re-run the SAME ZIP list - finished agents replay instantly from the");
