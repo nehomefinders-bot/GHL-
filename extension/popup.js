@@ -78,7 +78,7 @@ function scrapeZips(zips, maxPages, turbo) {
   // replayed from a previous run's cache; dupWon = same agent seen in an earlier
   // ZIP of this run. None of those spend any of realtor's request budget.
   let turboTried = 0, turboWon = 0, turboHintShown = false, turboOff = false;
-  let listWon = 0, cacheWon = 0, dupWon = 0;
+  let listWon = 0, cacheWon = 0, dupWon = 0, apiWon = 0;
 
   let panel = document.getElementById("__ra_scraper_panel");
   if (!panel) {
@@ -141,6 +141,164 @@ function scrapeZips(zips, maxPages, turbo) {
   // for free. These live at run scope so a burned session carries across ZIPs.
   let restUntil = 0, recoveries = 0, burnedStop = false;
   const REST_TRIGGER = 5, REST_MAX = 3;
+  const enterRest = (zip, remaining) => {
+    recoveries++;
+    paceEvery = 4000; tokens = 0; tokenCap = 3;
+    if (recoveries > REST_MAX) {
+      burnedStop = true;
+      log(`  ${zip}: realtor has blocked this session. STOPPING - everyone finished is saved & cached.`);
+      log(`  >> Click around realtor.com in this tab for ~1 min (open a couple of agents) to clear the`);
+      log(`  >> block, then run the SAME ZIPs again - finished agents replay instantly from cache.`);
+    } else {
+      const restMs = Math.min(150000, 60000 * recoveries);
+      restUntil = Date.now() + restMs;
+      log(`  ${zip}: realtor blocked the session - RESTING ${Math.round(restMs / 1000)}s to let it clear.`);
+      log(`  >> Clicking around realtor.com in this tab (open an agent or two) clears it faster.`);
+      log(`  >> Nothing lost - ${remaining} to go, will auto-resume.`);
+    }
+  };
+
+  // ---- realtor's own GraphQL API (captured from the site's own network calls).
+  // This is THE fix for throttling: reading data this way costs a tiny fraction
+  // of the requests that loading pages does. One SearchAgents call lists a whole
+  // page of agents; one BATCHED AgentBranding call reads many agents' phones at
+  // once - so a ZIP costs ~4 requests instead of ~1 per agent. Same-origin fetch
+  // carries the user's cookies (incl. the bot-guard token), so realtor sees its
+  // own site making its own calls. Everything routes through the global pacer and
+  // the rest/burn handling, so it still backs off gracefully if realtor pushes back.
+  const GQL_URL = location.origin + "/frontdoor/graphql";
+  const GQL_HEADERS = { "content-type": "application/json", "rdc-client-name": "agent-branding-profile", "rdc-client-version": "0.0.841" };
+  async function gql(operationName, query, variables) {
+    let txt = "", status = 0;
+    try {
+      const resp = await fetch(GQL_URL, { method: "POST", credentials: "same-origin", headers: GQL_HEADERS,
+        body: JSON.stringify({ operationName, query, variables }) });
+      status = resp.status; txt = await resp.text();
+    } catch (e) { return { error: true }; }
+    if (status === 429 || status === 403 || isBlockedText(txt)) return { blocked: true };
+    let j; try { j = JSON.parse(txt); } catch (e) { return { error: true }; }
+    return { data: j.data, errors: j.errors };
+  }
+  let apiStreak = 0;
+  async function gqlPaced(zip, opName, query, variables, remaining) {   // pace + block->rest
+    for (let attempt = 0; attempt < 40 && !burnedStop; attempt++) {
+      if (Date.now() < restUntil) { await sleep(Math.min(restUntil - Date.now() + 50, 3000)); continue; }
+      await paceWait();
+      const r = await gql(opName, query, variables);
+      if (!r.blocked) { apiStreak = 0; paceSuccess(); return r; }
+      apiStreak++; paceThrottled();
+      if (apiStreak >= REST_TRIGGER) { apiStreak = 0; enterRest(zip, remaining); }
+    }
+    return { blocked: true };
+  }
+
+  const SEARCH_QUERY = "query SearchAgents($searchAgentInput: SearchAgentInput) { search_agents(search_agent_input: $searchAgentInput) { agents { id fulfillment_id fullname broker { name } office { name } } matching_rows } }";
+  async function apiListAgents(zip) {
+    const out = [], seen = new Set(), limit = 20;
+    for (let page = 0; page < 300 && !burnedStop; page++) {
+      const r = await gqlPaced(zip, "SearchAgents", SEARCH_QUERY, { searchAgentInput: {
+        name: "", postal_code: zip, languages: [], agent_type: null, marketing_area_city: "",
+        sort: "RELEVANT_AGENTS", offset: page * limit, agent_filter_criteria: "NRDS_AND_FULFILLMENT_ID_EXISTS",
+        sort_algorithm: "DEFAULT_MODEL", limit } }, "listing");
+      if (r.blocked) return { blocked: true, agents: out };
+      const sa = r.data && r.data.search_agents;
+      if (!sa || !Array.isArray(sa.agents)) return { unavailable: page === 0, agents: out };
+      let added = 0;
+      for (const a of sa.agents) if (a && a.id && !seen.has(a.id)) { seen.add(a.id); out.push(a); added++; }
+      const total = sa.matching_rows || out.length;
+      log(`  ${zip}: listed ${out.length}${total ? "/" + total : ""} agents (API, ${page + 1} call${page ? "s" : ""})`);
+      if (added === 0 || sa.agents.length < limit || out.length >= total) break;
+    }
+    return { agents: out };
+  }
+
+  const PROFILE_FIELDS = "branding { id fulfillment_id fullname phones { type value } website broker { name website } office { name phones { type value } address { address_formatted_line_1 address_formatted_line_2 city state_code postal_code } } license_number license_state }";
+  const ONE_PROFILE_QUERY = "query AgentBrandingProfile($agentBrandingInput: AgentBrandingInput) { agent_branding(agent_branding_input: $agentBrandingInput) { " + PROFILE_FIELDS + " } }";
+  const buildBatchQuery = (ids) =>
+    "query AgentBrandingBatch { " +
+    ids.map((id, i) => `a${i}: agent_branding(agent_branding_input: { profile_id: ${JSON.stringify(id)} }) { ${PROFILE_FIELDS} }`).join(" ") +
+    " }";
+  async function apiProfiles(zip, ids, remaining) {
+    // One POST for the whole batch (aliased). If the endpoint rejects aliasing
+    // (no data back), fall back to one call per agent - still on the API, just
+    // more requests.
+    const r = await gqlPaced(zip, "AgentBrandingBatch", buildBatchQuery(ids), {}, remaining);
+    if (r.blocked) return { blocked: true };
+    const out = {}; let got = 0;
+    if (r.data) ids.forEach((id, i) => { const n = r.data["a" + i]; if (n && n.branding) { out[id] = n.branding; got++; } });
+    if (got > 0) return { profiles: out };
+    for (const id of ids) {                    // batch unsupported -> singles
+      if (burnedStop) break;
+      const s = await gqlPaced(zip, "AgentBrandingProfile", ONE_PROFILE_QUERY,
+        { agentBrandingInput: { profile_id: id, fulfillment_id: null, nrds_id: null } }, remaining);
+      if (s.blocked) return { blocked: true, profiles: out };
+      const b = s.data && s.data.agent_branding && s.data.agent_branding.branding;
+      if (b) out[id] = b;
+    }
+    return { profiles: out };
+  }
+
+  function rowFromBranding(b, zip, url) {
+    const phones = [], links = [], contactBits = [];
+    (b.phones || []).forEach((p) => p && p.value && phones.push(clean(p.value)));
+    if (b.office && Array.isArray(b.office.phones)) b.office.phones.forEach((p) => p && p.value && phones.push(clean(p.value)));
+    if (b.broker && b.broker.name) contactBits.push(clean(b.broker.name));
+    if (b.office && b.office.name) contactBits.push(clean(b.office.name));
+    if (b.office && b.office.address) { const a = b.office.address;
+      [a.address_formatted_line_1, a.address_formatted_line_2, a.city, a.state_code, a.postal_code].forEach((x) => x && contactBits.push(clean(String(x)))); }
+    if (b.license_state && b.license_number) contactBits.push("License " + b.license_state + " " + b.license_number);
+    if (b.website && /^https?:/.test(b.website)) links.push(b.website);
+    if (b.broker && b.broker.website && /^https?:/.test(b.broker.website)) links.push(b.broker.website);
+    return {
+      search_zip: zip,
+      name: clean(b.fullname),
+      name_section: clean(b.fullname),
+      contact_information: clean([...new Set(contactBits)].join(" | ")),
+      phones: [...new Set(phones)].join("; "),
+      website_links: [...new Set(links)].join("; "),
+      profile_url: url,
+    };
+  }
+
+  // API-based scrape of one ZIP. Returns rows, or null if the API isn't usable
+  // (so the caller falls back to page-scraping).
+  async function scrapeOneZipApi(zip) {
+    const list = await apiListAgents(zip);
+    if (list.unavailable) return null;                 // fall back to HTML
+    const agents = list.agents || [];
+    if (agents.length === 0) return [];
+    const total = agents.length;
+    const rows = new Array(total);
+    let done = 0;
+    const pending = [];
+    agents.forEach((a, i) => {
+      const url = location.origin + "/realestateagents/" + a.id;
+      let hit = memRows.get(url), via = "dup";
+      if (!(hit && isGoodRow(hit))) { hit = cacheGet(url); via = "cached"; }
+      if (hit && isGoodRow(hit)) {
+        const row = { ...hit, search_zip: zip };
+        rows[i] = row; memRows.set(url, row); done++;
+        if (via === "dup") dupWon++; else cacheWon++;
+        log(`  ${zip}: [${done}/${total}] ${row.name || "(no name)"} (${via})`);
+      } else pending.push({ a, i, url });
+    });
+    const BATCH = 8;
+    for (let k = 0; k < pending.length && !burnedStop; k += BATCH) {
+      const chunk = pending.slice(k, k + BATCH);
+      const res = await apiProfiles(zip, chunk.map((c) => c.a.id), total - done);
+      if (res.blocked) break;                          // rest/burn handled inside; stop this ZIP
+      for (const c of chunk) {
+        const b = res.profiles[c.a.id];
+        const row = b ? rowFromBranding(b, zip, c.url) : null;
+        done++;
+        if (row && isGoodRow(row)) { keep(c.url, row); rows[c.i] = row; apiWon++;
+          log(`  ${zip}: [${done}/${total}] ${row.name} (api)`); }
+        else { log(`  ${zip}: [${done}/${total}] ${c.a.fullname || "(no name)"} - no phone listed`); }
+      }
+    }
+    flushCache();
+    return rows.filter(Boolean);
+  }
 
   // ---- Never scrape the same agent twice. memRows dedups across the ZIPs of
   // this run (nearby ZIPs share many agents). The localStorage cache (7 days)
@@ -621,7 +779,18 @@ function scrapeZips(zips, maxPages, turbo) {
     a.remove();
   }
 
+  // Dispatcher: in Turbo, try realtor's own API first (a few requests per ZIP);
+  // only if the API isn't usable do we fall back to page-scraping.
   async function scrapeOneZip(zip) {
+    if (turbo && !burnedStop) {
+      const apiRows = await scrapeOneZipApi(zip);
+      if (apiRows !== null) return apiRows;      // API handled it (even if 0 rows)
+      log(`  ${zip}: realtor API not available here - using page-scraping fallback.`);
+    }
+    return await scrapeOneZipHtml(zip);
+  }
+
+  async function scrapeOneZipHtml(zip) {
     const base = location.origin + "/realestateagents/" + zip + "/intent-both/sort-relevantagents/agenttype-all";
     const profileUrls = [];
     const seen = new Set();
@@ -840,15 +1009,16 @@ function scrapeZips(zips, maxPages, turbo) {
 
       log(`ALL DONE. ${allRows.length} agents across ${zips.length} ZIP(s). Check your Downloads folder.`);
       const saved = cacheWon + dupWon + listWon;
-      if (saved > 0 || turboTried > 0) {
+      if (saved > 0 || turboTried > 0 || apiWon > 0) {
         const bits = [];
+        if (apiWon > 0) bits.push(`${apiWon} via realtor's API (batched)`);
         if (cacheWon > 0) bits.push(`${cacheWon} from cache (an earlier run)`);
         if (dupWon > 0) bits.push(`${dupWon} repeat agents across ZIPs`);
         if (listWon > 0) bits.push(`${listWon} from results pages`);
         if (turboWon > 0) bits.push(`${turboWon} fast profile fetch`);
         if (turboTried - turboWon > 0) bits.push(`${turboTried - turboWon} classic fallback`);
         if (bits.length) log("How agents were read: " + bits.join(", ") + ".");
-        if (saved > 0) log(`Skipped ${saved} realtor request(s) via cache/dedup/results-pages - that much less throttling.`);
+        if (saved > 0) log(`Skipped ${saved} realtor request(s) via cache/dedup - that much less throttling.`);
       }
       if (zeroZips.length > 0) {
         log(`NOTE: ${zeroZips.length} ZIP(s) returned 0 agents (likely a block). Re-run just these:`);
