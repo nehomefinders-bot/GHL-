@@ -326,10 +326,11 @@ function scrapeZips(zips, maxPages, turbo) {
   // survives re-runs: an interrupted or repeated run replays finished agents
   // instantly instead of re-spending realtor's request budget on them.
   const memRows = new Map();
-  const CACHE_KEY = "__ra_agent_cache_v1";
+  const CACHE_KEY = "__ra_agent_cache_v2";   // v2: rows where phones = agent's own only
   const CACHE_TTL = 7 * 24 * 3600 * 1000, CACHE_MAX = 2500;
   let diskCache = {};
   try { diskCache = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}") || {}; } catch (e) { diskCache = {}; }
+  try { localStorage.removeItem("__ra_agent_cache_v1"); } catch (e) {}   // drop the old (office-phone) cache
   const cacheGet = (url) => {
     const e = diskCache[url];
     return e && e.r && (Date.now() - e.t) < CACHE_TTL ? e.r : null;
